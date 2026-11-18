@@ -1,0 +1,40 @@
+orange_box_perception_node:
+  ros__parameters:
+    use_sim_time: true
+
+    image_topic: /robot1/stereo/left/image_rect
+    depth_topic: /robot1/stereo/depth
+    camera_info_topic: /robot1/stereo/left/camera_info_rect
+    camera_frame: left_camera_optical_frame
+    base_frame: base_footprint
+
+    sync_slop_sec: 0.08
+    queue_size: 8
+    max_rate_hz: 5.0
+
+    # Initial HSV values for Gazebo orange material RGB ~= (0.95, 0.28, 0.025).
+    # Tune if lighting/exposure causes false positives or missed boxes.
+    hue_min: 3
+    hue_max: 30
+    saturation_min: 100
+    value_min: 60
+    morph_kernel: 3
+    min_area_px: 120.0
+    min_width_px: 5
+    min_height_px: 5
+    min_extent: 0.20
+    max_aspect_ratio: 4.0
+    max_detections: 28
+
+    min_depth_m: 0.20
+    max_depth_m: 5.0
+    min_valid_depth_pixels: 8
+    erode_kernel: 3
+
+    overlay_topic: /robot1/perception/orange_boxes/overlay
+    mask_topic: /robot1/perception/orange_boxes/mask
+    centers_camera_topic: /robot1/perception/orange_boxes/centers_camera
+    centers_base_topic: /robot1/perception/orange_boxes/centers_base
+    markers_topic: /robot1/perception/orange_boxes/markers
+    metrics_topic: /robot1/perception/orange_boxes/metrics
+    ready_topic: /robot1/perception/orange_boxes/ready

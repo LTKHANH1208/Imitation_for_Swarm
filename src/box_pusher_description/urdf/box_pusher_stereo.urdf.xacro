@@ -1,0 +1,519 @@
+<?xml version="1.0"?>
+<robot name="box_pusher_stereo" xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!--
+    Box-pushing differential-drive robot for ROS 2 Jazzy + Gazebo Harmonic.
+    REP-103 body axes: +X forward, +Y left, +Z up.
+    base_footprint is on the ground plane; base_link is the chassis centre.
+
+    Stereo cameras are mounted with a small inward toe-in (default 0.06 rad).
+    Calibrate/rectify the pair before using it for metric depth/disparity.
+  -->
+  <xacro:arg name="robot_namespace" default="robot1"/>
+  <xacro:arg name="camera_baseline" default="0.12"/>
+  <xacro:arg name="camera_toe_in" default="0.06"/>
+
+  <xacro:property name="ns" value="$(arg robot_namespace)"/>
+  <xacro:property name="my_pi" value="3.141592653589793"/>
+  <xacro:property name="baseline" value="$(arg camera_baseline)"/>
+  <xacro:property name="toe_in" value="$(arg camera_toe_in)"/>
+
+  <!-- Chassis geometry; base_link origin is at the chassis geometric centre. -->
+  <xacro:property name="base_length" value="0.30"/>
+  <xacro:property name="base_width" value="0.20"/>
+  <xacro:property name="base_height" value="0.07"/>
+  <xacro:property name="base_mass" value="0.85"/>
+  <xacro:property name="base_center_z" value="0.105"/>
+
+  <!-- Main drive wheels. -->
+  <xacro:property name="wheel_radius" value="0.055"/>
+  <xacro:property name="wheel_width" value="0.024"/>
+  <xacro:property name="wheel_track" value="0.23"/>
+  <xacro:property name="wheel_x" value="-0.020"/>
+  <xacro:property name="wheel_mass" value="0.085"/>
+
+  <!-- Rear swivel caster: wheel centre trails the vertical swivel axis. -->
+  <xacro:property name="caster_radius" value="0.018"/>
+  <xacro:property name="caster_width" value="0.010"/>
+  <xacro:property name="caster_pivot_x" value="-0.100"/>
+  <xacro:property name="caster_pivot_z" value="-0.060"/>
+  <xacro:property name="caster_trail" value="0.020"/>
+  <xacro:property name="caster_wheel_z" value="-0.027"/>
+
+  <!-- Stereo support bridge and camera modules. -->
+  <xacro:property name="camera_x" value="0.090"/>
+  <xacro:property name="camera_z" value="0.079"/>
+  <xacro:property name="camera_housing_x" value="0.040"/>
+  <xacro:property name="camera_housing_y" value="0.042"/>
+  <xacro:property name="camera_housing_z" value="0.030"/>
+  <xacro:property name="camera_mass" value="0.035"/>
+
+  <!-- U-shaped passive box guide/pusher, open towards +X. -->
+  <xacro:property name="pusher_z" value="-0.065"/>
+  <xacro:property name="pusher_mass" value="0.12"/>
+
+  <material name="chassis_blue"><color rgba="0.10 0.25 0.43 1.0"/></material>
+  <material name="chassis_light"><color rgba="0.20 0.39 0.58 1.0"/></material>
+  <material name="rubber_black"><color rgba="0.025 0.028 0.032 1.0"/></material>
+  <material name="rubber_tread"><color rgba="0.065 0.070 0.075 1.0"/></material>
+  <material name="metal"><color rgba="0.62 0.66 0.70 1.0"/></material>
+  <material name="camera_body"><color rgba="0.075 0.085 0.10 1.0"/></material>
+  <material name="camera_trim"><color rgba="0.22 0.25 0.29 1.0"/></material>
+  <material name="lens_glass"><color rgba="0.035 0.20 0.31 0.92"/></material>
+  <material name="pusher_orange"><color rgba="0.95 0.30 0.035 1.0"/></material>
+  <material name="sensor_green"><color rgba="0.06 0.36 0.18 1.0"/></material>
+  <material name="chip_black"><color rgba="0.035 0.04 0.045 1.0"/></material>
+
+  <xacro:macro name="box_inertial" params="mass x y z">
+    <inertial>
+      <mass value="${mass}"/>
+      <inertia
+        ixx="${mass * (y*y + z*z) / 12.0}" ixy="0" ixz="0"
+        iyy="${mass * (x*x + z*z) / 12.0}" iyz="0"
+        izz="${mass * (x*x + y*y) / 12.0}"/>
+    </inertial>
+  </xacro:macro>
+
+  <xacro:macro name="drive_wheel" params="side y_pos">
+    <link name="${side}_wheel_link">
+      <!-- Rubber tyre and two visible side hubs. -->
+      <visual name="${side}_tyre_visual">
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+        <material name="rubber_black"/>
+      </visual>
+      <visual name="${side}_hub_visual">
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="0.031" length="${wheel_width + 0.001}"/></geometry>
+        <material name="metal"/>
+      </visual>
+      <visual name="${side}_hub_cap_visual">
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="0.012" length="${wheel_width + 0.002}"/></geometry>
+        <material name="chassis_light"/>
+      </visual>
+      <collision name="${side}_tyre_collision">
+        <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="${wheel_radius}" length="${wheel_width}"/></geometry>
+      </collision>
+      <inertial>
+        <mass value="${wheel_mass}"/>
+        <!-- Wheel spin axis is local Y, therefore Iyy is the axial inertia. -->
+        <inertia
+          ixx="${wheel_mass * (3*wheel_radius*wheel_radius + wheel_width*wheel_width) / 12.0}"
+          ixy="0" ixz="0"
+          iyy="${0.5 * wheel_mass * wheel_radius * wheel_radius}"
+          iyz="0"
+          izz="${wheel_mass * (3*wheel_radius*wheel_radius + wheel_width*wheel_width) / 12.0}"/>
+      </inertial>
+    </link>
+    <joint name="${side}_wheel_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${side}_wheel_link"/>
+      <origin xyz="${wheel_x} ${y_pos} ${wheel_radius - base_center_z}" rpy="0 0 0"/>
+      <axis xyz="0 1 0"/>
+      <limit effort="5.0" velocity="14.0"/>
+      <dynamics damping="0.04" friction="0.0"/>
+    </joint>
+    <gazebo reference="${side}_wheel_link">
+      <mu1>1.2</mu1><mu2>1.2</mu2>
+      <kp>1000000.0</kp><kd>10.0</kd>
+    </gazebo>
+  </xacro:macro>
+
+  <!-- Ground reference frame. -->
+  <link name="base_footprint"/>
+
+  <!-- Main chassis shell. -->
+  <link name="base_link">
+    <visual name="chassis_visual">
+      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
+      <material name="chassis_blue"/>
+    </visual>
+    <!-- Small top deck gives the body a layered, recognisable appearance. -->
+    <visual name="top_deck_visual">
+      <origin xyz="-0.005 0 0.037" rpy="0 0 0"/>
+      <geometry><box size="0.245 0.165 0.006"/></geometry>
+      <material name="chassis_light"/>
+    </visual>
+    <!-- Visible motor/axle pods bridge the side walls to the wheel hubs. -->
+    <visual name="left_motor_pod_visual">
+      <origin xyz="${wheel_x} 0.105 ${wheel_radius - base_center_z}" rpy="${pi/2} 0 0"/>
+      <geometry><cylinder radius="0.018" length="0.034"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual name="right_motor_pod_visual">
+      <origin xyz="${wheel_x} -0.105 ${wheel_radius - base_center_z}" rpy="${pi/2} 0 0"/>
+      <geometry><cylinder radius="0.018" length="0.034"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <!-- Neck from the chassis underside down to the caster swivel bearing. -->
+    <visual name="rear_caster_mount_neck_visual">
+      <origin xyz="${caster_pivot_x} 0 -0.0475" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.011" length="0.025"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual name="rear_caster_mount_plate_visual">
+      <origin xyz="${caster_pivot_x} 0 -0.036" rpy="0 0 0"/>
+      <geometry><box size="0.042 0.042 0.006"/></geometry>
+      <material name="chassis_light"/>
+    </visual>
+    <collision name="chassis_collision">
+      <geometry><box size="${base_length} ${base_width} ${base_height}"/></geometry>
+    </collision>
+    <xacro:box_inertial mass="${base_mass}" x="${base_length}" y="${base_width}" z="${base_height}"/>
+  </link>
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/><child link="base_link"/>
+    <origin xyz="0 0 ${base_center_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Left and right motor wheels. Joint position/velocity are simulated encoder data. -->
+  <xacro:drive_wheel side="left" y_pos="${wheel_track/2.0}"/>
+  <xacro:drive_wheel side="right" y_pos="${-wheel_track/2.0}"/>
+
+  <!-- Proper passive caster assembly: free vertical swivel + free wheel axle. -->
+  <link name="rear_caster_swivel_link">
+    <visual name="caster_bearing_visual">
+      <geometry><cylinder radius="0.014" length="0.009"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual name="caster_neck_visual">
+      <origin xyz="-0.005 0 -0.014" rpy="0 0 0"/>
+      <geometry><cylinder radius="0.006" length="0.022"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual name="caster_fork_left_visual">
+      <origin xyz="-${caster_trail} 0.009 -0.018" rpy="0 0 0"/>
+      <geometry><box size="0.030 0.004 0.020"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual name="caster_fork_right_visual">
+      <origin xyz="-${caster_trail} -0.009 -0.018" rpy="0 0 0"/>
+      <geometry><box size="0.030 0.004 0.020"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <collision name="caster_fork_left_collision">
+      <origin xyz="-${caster_trail} 0.009 -0.018"/>
+      <geometry><box size="0.030 0.004 0.020"/></geometry>
+    </collision>
+    <collision name="caster_fork_right_collision">
+      <origin xyz="-${caster_trail} -0.009 -0.018"/>
+      <geometry><box size="0.030 0.004 0.020"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.012 0 -0.012"/>
+      <mass value="0.025"/>
+      <inertia ixx="0.000010" ixy="0" ixz="0" iyy="0.000010" iyz="0" izz="0.000010"/>
+    </inertial>
+  </link>
+  <joint name="rear_caster_swivel_joint" type="continuous">
+    <parent link="base_link"/><child link="rear_caster_swivel_link"/>
+    <origin xyz="${caster_pivot_x} 0 ${caster_pivot_z}"/>
+    <axis xyz="0 0 1"/>
+    <limit effort="0.5" velocity="20.0"/>
+    <dynamics damping="0.015" friction="0.002"/>
+  </joint>
+
+  <link name="rear_caster_wheel_link">
+    <visual name="caster_tyre_visual">
+      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+      <geometry><cylinder radius="${caster_radius}" length="${caster_width}"/></geometry>
+      <material name="rubber_tread"/>
+    </visual>
+    <visual name="caster_hub_visual">
+      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+      <geometry><cylinder radius="0.008" length="${caster_width + 0.001}"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <collision name="caster_tyre_collision">
+      <origin xyz="0 0 0" rpy="${pi/2} 0 0"/>
+      <geometry><cylinder radius="${caster_radius}" length="${caster_width}"/></geometry>
+    </collision>
+    <inertial>
+      <mass value="0.012"/>
+      <inertia
+        ixx="${0.012 * (3*caster_radius*caster_radius + caster_width*caster_width) / 12.0}"
+        ixy="0" ixz="0"
+        iyy="${0.5 * 0.012 * caster_radius * caster_radius}"
+        iyz="0"
+        izz="${0.012 * (3*caster_radius*caster_radius + caster_width*caster_width) / 12.0}"/>
+    </inertial>
+  </link>
+  <joint name="rear_caster_wheel_joint" type="continuous">
+    <parent link="rear_caster_swivel_link"/><child link="rear_caster_wheel_link"/>
+    <origin xyz="-${caster_trail} 0 ${caster_wheel_z}"/>
+    <axis xyz="0 1 0"/>
+    <limit effort="0.3" velocity="25.0"/>
+    <dynamics damping="0.001" friction="0.0"/>
+  </joint>
+  <gazebo reference="rear_caster_wheel_link">
+    <mu1>0.55</mu1><mu2>0.55</mu2>
+    <kp>500000.0</kp><kd>5.0</kd>
+  </gazebo>
+
+  <!-- U-shaped front pusher/guide. Its opening faces forward (+X): a rear
+       crossbar transmits pushing force while the two rails keep a box aligned. -->
+  <link name="front_u_pusher_link">
+    <visual name="u_rear_crossbar_visual">
+      <origin xyz="0.008 0 0"/>
+      <geometry><box size="0.018 0.200 0.040"/></geometry>
+      <material name="pusher_orange"/>
+    </visual>
+    <visual name="u_left_rail_visual">
+      <origin xyz="0.082 0.092 0"/>
+      <geometry><box size="0.148 0.016 0.040"/></geometry>
+      <material name="pusher_orange"/>
+    </visual>
+    <visual name="u_right_rail_visual">
+      <origin xyz="0.082 -0.092 0"/>
+      <geometry><box size="0.148 0.016 0.040"/></geometry>
+      <material name="pusher_orange"/>
+    </visual>
+    <collision name="u_rear_crossbar_collision">
+      <origin xyz="0.008 0 0"/>
+      <geometry><box size="0.018 0.200 0.040"/></geometry>
+    </collision>
+    <collision name="u_left_rail_collision">
+      <origin xyz="0.082 0.092 0"/>
+      <geometry><box size="0.148 0.016 0.040"/></geometry>
+    </collision>
+    <collision name="u_right_rail_collision">
+      <origin xyz="0.082 -0.092 0"/>
+      <geometry><box size="0.148 0.016 0.040"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.080 0 0"/>
+      <mass value="${pusher_mass}"/>
+      <inertia ixx="0.00045" ixy="0" ixz="0" iyy="0.00030" iyz="0" izz="0.00045"/>
+    </inertial>
+  </link>
+  <joint name="front_u_pusher_mount_joint" type="fixed">
+    <parent link="base_link"/><child link="front_u_pusher_link"/>
+    <origin xyz="${base_length/2.0} 0 ${pusher_z}"/>
+  </joint>
+
+  <!-- Raised stereo bridge: cross member plus two short support posts. -->
+  <link name="stereo_camera_bar_link">
+    <visual name="stereo_bar_visual">
+      <origin xyz="${camera_x} 0 0.058"/>
+      <geometry><box size="0.026 0.178 0.012"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual name="stereo_post_left_visual">
+      <origin xyz="${camera_x} 0.072 0.040"/>
+      <geometry><box size="0.014 0.014 0.044"/></geometry>
+      <material name="chassis_light"/>
+    </visual>
+    <visual name="stereo_post_right_visual">
+      <origin xyz="${camera_x} -0.072 0.040"/>
+      <geometry><box size="0.014 0.014 0.044"/></geometry>
+      <material name="chassis_light"/>
+    </visual>
+    <collision name="stereo_bar_collision">
+      <origin xyz="${camera_x} 0 0.058"/>
+      <geometry><box size="0.026 0.178 0.012"/></geometry>
+    </collision>
+    <inertial>
+      <origin xyz="${camera_x} 0 0.045"/>
+      <mass value="0.060"/>
+      <inertia ixx="0.00020" ixy="0" ixz="0" iyy="0.00010" iyz="0" izz="0.00020"/>
+    </inertial>
+  </link>
+  <joint name="stereo_camera_bar_mount_joint" type="fixed">
+    <parent link="base_link"/><child link="stereo_camera_bar_link"/>
+    <origin xyz="0 0 0"/>
+  </joint>
+
+  <!-- Camera left (+Y): housing, threaded lens barrel, retaining ring and glass. -->
+  <link name="left_camera_link">
+    <visual name="left_camera_housing_visual">
+      <geometry><box size="${camera_housing_x} ${camera_housing_y} ${camera_housing_z}"/></geometry>
+      <material name="camera_body"/>
+    </visual>
+    <visual name="left_camera_front_trim_visual">
+      <origin xyz="0.019 0 0"/>
+      <geometry><box size="0.004 0.034 0.024"/></geometry>
+      <material name="camera_trim"/>
+    </visual>
+    <visual name="left_lens_barrel_visual">
+      <origin xyz="0.026 0 0" rpy="0 ${pi/2} 0"/>
+      <geometry><cylinder radius="0.0105" length="0.016"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual name="left_lens_ring_visual">
+      <origin xyz="0.035 0 0" rpy="0 ${pi/2} 0"/>
+      <geometry><cylinder radius="0.0115" length="0.003"/></geometry>
+      <material name="camera_trim"/>
+    </visual>
+    <visual name="left_lens_glass_visual">
+      <origin xyz="0.037 0 0" rpy="0 ${pi/2} 0"/>
+      <geometry><cylinder radius="0.0085" length="0.001"/></geometry>
+      <material name="lens_glass"/>
+    </visual>
+    <inertial>
+      <mass value="${camera_mass}"/>
+      <inertia ixx="0.000006" ixy="0" ixz="0" iyy="0.000006" iyz="0" izz="0.000006"/>
+    </inertial>
+  </link>
+  <joint name="left_camera_mount_joint" type="fixed">
+    <parent link="stereo_camera_bar_link"/><child link="left_camera_link"/>
+    <origin xyz="${camera_x} ${baseline/2.0} ${camera_z}" rpy="0 0 ${-toe_in}"/>
+  </joint>
+  <link name="left_camera_optical_frame"/>
+  <joint name="left_camera_optical_joint" type="fixed">
+    <parent link="left_camera_link"/><child link="left_camera_optical_frame"/>
+    <origin xyz="0 0 0" rpy="${-pi/2.0} 0 ${-pi/2.0}"/>
+  </joint>
+
+  <gazebo reference="left_camera_link">
+    <sensor name="left_camera_sensor" type="camera">
+      <always_on>true</always_on>
+      <update_rate>30.0</update_rate>
+      <visualize>false</visualize>
+      <gz_frame_id>left_camera_optical_frame</gz_frame_id>
+      <topic>/${ns}/stereo/left/image_raw</topic>
+      <camera>
+        <horizontal_fov>2.09439510239</horizontal_fov>
+        <image><width>640</width><height>480</height><format>R8G8B8</format></image>
+        <clip><near>0.05</near><far>8.0</far></clip>
+        <camera_info_topic>/${ns}/stereo/left/camera_info</camera_info_topic>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  <!-- Camera right (-Y), yawed inward by the same angle. -->
+  <link name="right_camera_link">
+    <visual name="right_camera_housing_visual">
+      <geometry><box size="${camera_housing_x} ${camera_housing_y} ${camera_housing_z}"/></geometry>
+      <material name="camera_body"/>
+    </visual>
+    <visual name="right_camera_front_trim_visual">
+      <origin xyz="0.019 0 0"/>
+      <geometry><box size="0.004 0.034 0.024"/></geometry>
+      <material name="camera_trim"/>
+    </visual>
+    <visual name="right_lens_barrel_visual">
+      <origin xyz="0.026 0 0" rpy="0 ${pi/2} 0"/>
+      <geometry><cylinder radius="0.0105" length="0.016"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <visual name="right_lens_ring_visual">
+      <origin xyz="0.035 0 0" rpy="0 ${pi/2} 0"/>
+      <geometry><cylinder radius="0.0115" length="0.003"/></geometry>
+      <material name="camera_trim"/>
+    </visual>
+    <visual name="right_lens_glass_visual">
+      <origin xyz="0.037 0 0" rpy="0 ${pi/2} 0"/>
+      <geometry><cylinder radius="0.0085" length="0.001"/></geometry>
+      <material name="lens_glass"/>
+    </visual>
+    <inertial>
+      <mass value="${camera_mass}"/>
+      <inertia ixx="0.000006" ixy="0" ixz="0" iyy="0.000006" iyz="0" izz="0.000006"/>
+    </inertial>
+  </link>
+  <joint name="right_camera_mount_joint" type="fixed">
+    <parent link="stereo_camera_bar_link"/><child link="right_camera_link"/>
+    <origin xyz="${camera_x} ${-baseline/2.0} ${camera_z}" rpy="0 0 ${toe_in}"/>
+  </joint>
+  <link name="right_camera_optical_frame"/>
+  <joint name="right_camera_optical_joint" type="fixed">
+    <parent link="right_camera_link"/><child link="right_camera_optical_frame"/>
+    <origin xyz="0 0 0" rpy="${-pi/2.0} 0 ${-pi/2.0}"/>
+  </joint>
+
+  <gazebo reference="right_camera_link">
+    <sensor name="right_camera_sensor" type="camera">
+      <always_on>true</always_on>
+      <update_rate>30.0</update_rate>
+      <visualize>false</visualize>
+      <gz_frame_id>right_camera_optical_frame</gz_frame_id>
+      <topic>/${ns}/stereo/right/image_raw</topic>
+      <camera>
+        <horizontal_fov>2.09439510239</horizontal_fov>
+        <image><width>640</width><height>480</height><format>R8G8B8</format></image>
+        <clip><near>0.05</near><far>8.0</far></clip>
+        <camera_info_topic>/${ns}/stereo/right/camera_info</camera_info_topic>
+      </camera>
+    </sensor>
+  </gazebo>
+
+  <!-- MPU-like 6-axis IMU board located near the chassis centre. -->
+  <link name="imu_link">
+    <visual name="imu_pcb_visual">
+      <geometry><box size="0.034 0.030 0.004"/></geometry>
+      <material name="sensor_green"/>
+    </visual>
+    <visual name="imu_chip_visual">
+      <origin xyz="0 0 0.004"/>
+      <geometry><box size="0.012 0.012 0.006"/></geometry>
+      <material name="chip_black"/>
+    </visual>
+    <visual name="imu_connector_visual">
+      <origin xyz="-0.014 0 0.002"/>
+      <geometry><box size="0.006 0.018 0.006"/></geometry>
+      <material name="metal"/>
+    </visual>
+    <xacro:box_inertial mass="0.015" x="0.034" y="0.030" z="0.010"/>
+  </link>
+  <joint name="imu_mount_joint" type="fixed">
+    <parent link="base_link"/><child link="imu_link"/>
+    <origin xyz="-0.015 0 0.041"/>
+  </joint>
+  <gazebo reference="imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>true</always_on>
+      <update_rate>100.0</update_rate>
+      <visualize>false</visualize>
+      <gz_frame_id>imu_link</gz_frame_id>
+      <topic>/${ns}/imu/data</topic>
+      <imu>
+        <angular_velocity>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.002</stddev></noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.02</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.02</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.02</stddev></noise></z>
+        </linear_acceleration>
+      </imu>
+    </sensor>
+  </gazebo>
+
+  <!-- ros2_control: ROS commands -> wheel velocity; wheel joint states -> ROS encoder feedback. -->
+  <ros2_control name="BoxPusherDriveSystem" type="system">
+    <hardware><plugin>gz_ros2_control/GazeboSimSystem</plugin></hardware>
+    <joint name="left_wheel_joint">
+      <command_interface name="velocity"><param name="min">-14.0</param><param name="max">14.0</param></command_interface>
+      <state_interface name="position"/><state_interface name="velocity"/>
+    </joint>
+    <joint name="right_wheel_joint">
+      <command_interface name="velocity"><param name="min">-14.0</param><param name="max">14.0</param></command_interface>
+      <state_interface name="position"/><state_interface name="velocity"/>
+    </joint>
+  </ros2_control>
+
+  <gazebo>
+    <!-- Ground-truth pose is for evaluation only; do not feed it to the policy. -->
+    <plugin filename="gz-sim-pose-publisher-system" name="gz::sim::systems::PosePublisher">
+      <publish_link_pose>false</publish_link_pose>
+      <publish_model_pose>true</publish_model_pose>
+      <publish_nested_model_pose>false</publish_nested_model_pose>
+      <publish_visual_pose>false</publish_visual_pose>
+      <publish_collision_pose>false</publish_collision_pose>
+      <publish_sensor_pose>false</publish_sensor_pose>
+      <use_pose_vector_msg>false</use_pose_vector_msg>
+      <update_frequency>10.0</update_frequency>
+      <topic>/model/box_pusher/pose</topic>
+    </plugin>
+    <plugin filename="libgz_ros2_control-system.so" name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(find box_pusher_description)/config/controllers.yaml</parameters>
+      <robot_param>robot_description</robot_param>
+      <robot_param_node>robot_state_publisher</robot_param_node>
+      <controller_manager_prefix_node_name>controller_manager</controller_manager_prefix_node_name>
+      <ros><namespace>${ns}</namespace></ros>
+    </plugin>
+  </gazebo>
+</robot>

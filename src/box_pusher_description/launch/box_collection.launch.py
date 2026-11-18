@@ -162,6 +162,40 @@ def generate_launch_description():
         parameters=[orange_perception_config, {'use_sim_time': True}],
     )
 
+    orange_box_perception_evaluator = Node(
+        package='box_pusher_description',
+        executable='orange_box_perception_evaluator_node.py',
+        name='orange_box_perception_evaluator_node',
+        output='screen',
+        condition=IfCondition(LaunchConfiguration('use_perception_evaluator')),
+        parameters=[{
+            'use_sim_time': True,
+            'perception_metrics_topic': '/robot1/perception/orange_boxes/metrics',
+            'perception_overlay_topic': '/robot1/perception/orange_boxes/overlay',
+            'camera_info_topic': '/robot1/stereo/left/camera_info_rect',
+            'rectification_report_topic': '/robot1/stereo/rectification/report',
+            'robot_pose_topic': '/model/box_pusher/pose',
+            'box_pose_topic_prefix': '/model/orange_box_',
+            'box_pose_topic_suffix': '/pose',
+            'box_count': 28,
+            'box_size_x_m': 0.08,
+            'box_size_y_m': 0.08,
+            'box_size_z_m': 0.10,
+            'base_frame': 'base_footprint',
+            'camera_frame': 'left_camera_optical_frame',
+            'max_ground_truth_age_sec': 0.75,
+            'evaluation_rate_hz': 2.0,
+            'minimum_projected_area_px': 25.0,
+            'visibility_grid_size': 5,
+            'minimum_visible_ray_hits': 1,
+            'minimum_match_iou': 0.10,
+            'centroid_grid_size': 9,
+            'metrics_topic': '/robot1/perception/orange_boxes/evaluation/metrics',
+            'overlay_topic': '/robot1/perception/orange_boxes/evaluation/overlay',
+            'ready_topic': '/robot1/perception/orange_boxes/evaluation/ready',
+        }],
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument('use_task_evaluator', default_value='true'),
         DeclareLaunchArgument('use_collision_monitor', default_value='true'),
@@ -175,6 +209,7 @@ def generate_launch_description():
         DeclareLaunchArgument('use_stereo_depth', default_value='true'),
         DeclareLaunchArgument('use_stereo_depth_validation', default_value='true'),
         DeclareLaunchArgument('use_orange_box_perception', default_value='true'),
+        DeclareLaunchArgument('use_perception_evaluator', default_value='true'),
         DeclareLaunchArgument('stereo_rectify_rate_hz', default_value='10.0'),
         DeclareLaunchArgument('stereo_depth_rate_hz', default_value='5.0'),
         IncludeLaunchDescription(
@@ -195,4 +230,5 @@ def generate_launch_description():
         stereo_depth,
         stereo_depth_validation,
         orange_box_perception,
+        orange_box_perception_evaluator,
     ])

@@ -160,7 +160,15 @@ class OrangeBoxPerceptionNode(Node):
         delete.action = Marker.DELETEALL
         marker_array.markers.append(delete)
         self.markers_pub.publish(marker_array)
-        report = {'status': status, 'detection_count': 0, 'detections': []}
+        report = {
+            'status': status,
+            'detection_count': 0,
+            'candidate_count': 0,
+            'valid_depth_detection_count': 0,
+            'source_stamp': [int(header.stamp.sec), int(header.stamp.nanosec)],
+            'image_frame_id': str(header.frame_id),
+            'detections': [],
+        }
         report.update(extra)
         msg = String()
         msg.data = json.dumps(report, separators=(',', ':'), allow_nan=False)
@@ -225,6 +233,17 @@ class OrangeBoxPerceptionNode(Node):
 
             camera_frame = image_msg.header.frame_id or str(self.get_parameter('camera_frame').value)
             base_frame = str(self.get_parameter('base_frame').value)
+            # XYZ reconstructed from rectified pixels is expressed in the
+            # rectified optical basis. TF, however, describes the raw optical
+            # frame. Rotate points by R1.T before applying base<-raw-camera TF.
+            if len(info_msg.r) == 9:
+                rectification_r1 = np.asarray(info_msg.r, dtype=np.float64).reshape(3, 3)
+            else:
+                self._publish_empty(image_msg.header, 'INVALID_CAMERA_INFO_R')
+                return
+            if not np.all(np.isfinite(rectification_r1)):
+                self._publish_empty(image_msg.header, 'INVALID_CAMERA_INFO_R')
+                return
             camera_to_base = None
             try:
                 tf_msg = self.tf_buffer.lookup_transform(
@@ -277,15 +296,29 @@ class OrangeBoxPerceptionNode(Node):
                     cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 0, 255), 2)
                     cv2.putText(overlay, 'ORANGE? NO VALID DEPTH', (x, max(14, y - 5)),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 255), 1, cv2.LINE_AA)
+                    detections.append({
+                        'detection_index': det_index,
+                        'bbox_xywh': [int(x), int(y), int(w), int(h)],
+                        'bbox_center_uv': [int(x + w // 2), int(y + h // 2)],
+                        'contour_area_px': float(candidate['area_px']),
+                        'depth_valid': False,
+                        'depth_valid_ratio': float(stats['valid_ratio']),
+                        'visible_surface_centroid_camera_m': None,
+                        'visible_surface_centroid_rectified_camera_m': None,
+                        'coordinate_frame_camera': camera_frame,
+                        'point_semantics': 'visible_surface_centroid_not_geometric_box_center',
+                    })
                     continue
 
                 valid_depth_count += 1
-                camera_poses.poses.append(self._pose_from_xyz(xyz))
+                xyz_rectified = np.asarray(xyz, dtype=np.float64)
+                xyz_raw_camera = rectification_r1.T @ xyz_rectified
+                camera_poses.poses.append(self._pose_from_xyz(xyz_raw_camera))
                 base_xyz = None
                 if camera_to_base is not None:
                     trans, quat = camera_to_base
                     base_xyz = transform_point_xyz(
-                        xyz,
+                        xyz_raw_camera,
                         [trans.x, trans.y, trans.z],
                         quat,
                     )
@@ -323,8 +356,11 @@ class OrangeBoxPerceptionNode(Node):
                     'depth_median_m': float(stats['median_m']),
                     'depth_mad_m': float(stats['mad_m']),
                     'depth_valid_ratio': float(stats['valid_ratio']),
-                    'visible_surface_centroid_camera_m': [float(v) for v in xyz],
+                    'depth_valid': True,
+                    'visible_surface_centroid_camera_m': [float(v) for v in xyz_raw_camera],
+                    'visible_surface_centroid_rectified_camera_m': [float(v) for v in xyz_rectified],
                     'coordinate_frame_camera': camera_frame,
+                    'coordinate_frame_rectified_camera': 'left_camera_rect_optical_frame',
                     'point_semantics': 'visible_surface_centroid_not_geometric_box_center',
                 }
                 if base_xyz is not None:
@@ -344,6 +380,8 @@ class OrangeBoxPerceptionNode(Node):
             report = {
                 'status': 'OK' if valid_depth_count > 0 else ('NO_ORANGE_CANDIDATES' if not candidates else 'ORANGE_WITHOUT_VALID_DEPTH'),
                 'frame_count': self._frame_count,
+                'source_stamp': [int(image_msg.header.stamp.sec), int(image_msg.header.stamp.nanosec)],
+                'image_frame_id': str(image_msg.header.frame_id),
                 'input_image_size': [int(w_img), int(h_img)],
                 'candidate_count': len(candidates),
                 'valid_depth_detection_count': valid_depth_count,
@@ -355,6 +393,7 @@ class OrangeBoxPerceptionNode(Node):
                     'value_min': int(self.get_parameter('value_min').value),
                 },
                 'coordinate_semantics': 'visible_surface_centroid_not_geometric_box_center',
+                'rectified_xyz_rotated_back_to_raw_optical_for_tf': True,
                 'ground_truth_used': False,
                 'detections': detections,
             }

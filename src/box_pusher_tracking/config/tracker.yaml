@@ -1,0 +1,20 @@
+orange_box_tracker_node:
+  ros__parameters:
+    use_sim_time: true
+    detections_topic: /robot1/perception/orange_boxes/centers_base
+    odom_topic: /robot1/diff_drive_controller/odom
+    tracks_topic: /robot1/perception/orange_boxes/tracks
+    tracks_poses_topic: /robot1/perception/orange_boxes/tracks/poses
+    markers_topic: /robot1/perception/orange_boxes/tracks/markers
+    metrics_topic: /robot1/perception/orange_boxes/tracking/metrics
+    ready_topic: /robot1/perception/orange_boxes/tracking/ready
+    max_odom_sync_sec: 0.15
+    odom_history_size: 300
+    gate_distance_m: 0.35
+    max_age_sec: 1.25
+    min_hits: 2
+    measurement_sigma_m: 0.045
+    acceleration_noise: 0.8
+    marker_lifetime_sec: 0.5
+    show_tentative_tracks: true
+    tf_lookup_timeout_sec: 0.03

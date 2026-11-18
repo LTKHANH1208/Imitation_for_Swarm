@@ -17,6 +17,7 @@ install(PROGRAMS
   scripts/stereo_depth_node.py
   scripts/stereo_depth_validation_node.py
   scripts/orange_box_perception_node.py
+  scripts/orange_box_perception_evaluator_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -26,6 +27,7 @@ install(FILES
   scripts/stereo_geometry.py
   scripts/depth_validation_geometry.py
   scripts/orange_box_perception_geometry.py
+  scripts/perception_evaluation_geometry.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

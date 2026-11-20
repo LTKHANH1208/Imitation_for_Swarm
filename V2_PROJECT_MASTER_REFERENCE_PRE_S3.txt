@@ -1,0 +1,1644 @@
+V2 MULTI-ROBOT VISUOMOTOR BOX-PUSHING
+MASTER REFERENCE – THEORY, MATHEMATICS, ARCHITECTURE AND CURRENT CODE FLOW
+Version: Pre-S3 consolidation
+Date: 18 November 2026
+Language: Vietnamese (technical terms retained in English)
+Project workspace: /home/ltk1208/Imitation_for_Swarm
+Target environment: Ubuntu 24.04 + ROS 2 Jazzy + Gazebo Harmonic
+
+===============================================================================
+0. MỤC ĐÍCH VÀ CÁCH DÙNG TÀI LIỆU
+===============================================================================
+
+Tài liệu này gom lại nền tảng khoa học, toán học, cấu hình robot V2, môi trường
+Gazebo, các node ROS 2 và tư duy thiết kế đã dùng từ S0 đến S2.6. Đây là bản
+tham chiếu trước khi bắt đầu S3 (Teleoperation và Demonstration Collection).
+
+Quy ước quan trọng:
+- “Paper baseline” = phương pháp gốc trong bài báo.
+- “V2 implementation” = phần đã xây dựng cho robot V2.
+- “Extension” = chức năng mở rộng thêm, không được coi là thành phần nguyên bản
+  của bài báo.
+- “Ground truth” = dữ liệu thật trong mô phỏng Gazebo, chỉ dùng để đánh giá.
+- “Observation/policy input” = thông tin mà robot/policy được phép sử dụng.
+
+Không được đánh đồng trạng thái “unit test/static check PASS” với “đã chạy
+thực tế trên Gazebo”. Các milestone được người dùng xác nhận chạy thực tế được
+ghi riêng tại Mục 13.
+
+Workspace gốc luôn dùng:
+    /home/ltk1208/Imitation_for_Swarm
+
+Mọi lệnh terminal của dự án phải bắt đầu từ workspace này, trừ khi người dùng
+chủ động đổi đường dẫn.
+
+===============================================================================
+1. BÀI TOÁN NGHIÊN CỨU GỐC
+===============================================================================
+
+Tên bài báo:
+Learning Coordinated Visuomotor Box-Pushing from Solo Demonstrations
+arXiv: 2610.05677v1, ngày 05-10-2026.
+PDF: https://arxiv.org/pdf/2610.05677
+
+1.1. Bản chất bài toán
+
+Bài toán là coordinated box-pushing, không phải tightly collaborative
+manipulation.
+
+- Collaborative: nhiều robot phải phối hợp chặt để cùng thực hiện một thao tác
+  mà từng robot riêng lẻ không thể hoàn thành.
+- Coordinated: mỗi robot có khả năng tự làm nhiệm vụ; nhiều robot cùng hoạt động
+  để tăng throughput, nhưng cần tránh gây cản trở nhau.
+
+Trong bài báo, các robot tự tìm và đẩy những hộp màu cam đến vùng thu gom trung
+tâm. Một robot có thể hoàn thành nhiệm vụ một mình; nhiều robot có thể tăng tốc
+độ thu gom, nhưng cũng gây ra các tình huống:
+- Hai robot đối đầu hoặc va chạm.
+- Robot khác lấy/đẩy mất hộp mà robot đang xử lý.
+- Robot đẩy một robot khác về phía hố.
+- Congestion, deadlock hoặc livelock khi nhiều robot chen lấn.
+
+Mục tiêu nghiên cứu không chỉ là “đẩy được một hộp”, mà là học một visuomotor
+policy cục bộ có thể hoạt động trong môi trường nhiều robot mà không cần bộ
+điều phối trung tâm hoặc liên lạc robot-robot.
+
+1.2. Môi trường nghiên cứu gốc
+
+Các thông số chính:
+- Workspace: 3.5 m x 3.5 m.
+- Số hộp màu cam: 28.
+- Mỗi hộp: 0.08 m x 0.08 m x 0.10 m.
+- Vùng carpet đen: 1.0 m x 1.0 m.
+- Hố trung tâm: 0.5 m x 0.5 m.
+- Độ sâu hố: 0.145 m.
+- Tháp nhiều màu đánh dấu mục tiêu; tháp cao khoảng 0.13 m và đặt cách cạnh
+  hố khoảng 0.13 m theo mô tả thí nghiệm.
+- Một hộp được tính là đã giao nếu hộp rơi vào hố hoặc tâm hộp tới vùng carpet
+  đen theo định nghĩa của bài báo.
+
+1.3. Robot thật trong bài báo
+
+- Nền tảng: Raspberry Pi Mouse V3.
+- Chiều rộng robot khoảng 14 cm.
+- Differential-drive.
+- Raspberry Pi + Raspberry Pi Camera Module 3.
+- Một camera RGB nhìn về phía trước, FOV 120 độ.
+- ROS 2.
+- Điều khiển policy ở 5 Hz.
+- Policy nhận ảnh RGB và xuất lệnh vận tốc.
+- Không dùng GPU trên robot trong lúc triển khai.
+- Không dùng external localization làm input cho policy.
+- Không dùng inter-robot communication.
+- Markers trên nóc robot chỉ để đo tiến độ thí nghiệm, không phải policy input.
+
+ĐIỂM PHẢI NHỚ: Bài báo gốc dùng MỘT camera RGB; không dùng stereo, depth,
+IMU, EKF hay SLAM làm input bắt buộc cho policy. Các cảm biến mở rộng của V2
+không phải thông số nguyên bản của bài báo.
+
+1.4. Solo demonstration
+
+“Solo” nói về cách thu thập demonstration: chỉ một robot được con người
+teleoperate và observation-action pair của robot đó được ghi lại. Những robot
+khác có thể đứng yên hoặc chạy một policy đã học để tạo ra bối cảnh tương tác.
+
+Một mẫu cơ bản:
+    D = {(o_t, a_t)}
+Trong paper baseline:
+    o_t = ảnh RGB onboard tại thời điểm t
+    a_t = lệnh vận tốc do người điều khiển phát ra
+
+Không ghi nhãn hành vi thủ công như “tìm hộp”, “đẩy hộp”, “né robot” làm
+supervision bắt buộc. Policy học trực tiếp từ observation-action pairs.
+
+1.5. Dataset trong bài báo
+
+Bốn nhóm dữ liệu:
+
+A. Single (6K)
+- Một robot được operator điều khiển trong môi trường.
+- Thu thập hành vi tìm, tiếp cận, đẩy và thu gom hộp.
+
+B. Recovery (2K)
+- Thu thập tình huống khó: gần tường, bị chặn, mắc kẹt, cần đổi hướng/thoát.
+- Recovery rất quan trọng khi số robot triển khai tăng và congestion nhiều.
+
+C. Static (12K)
+- Một robot do operator điều khiển.
+- Robot khác đặt đứng yên làm chướng ngại/bối cảnh.
+
+D. Dynamic (12K)
+- Huấn luyện policy tĩnh ban đầu.
+- Cho nhiều robot chạy policy ban đầu.
+- Operator tiếp tục điều khiển một robot khác trong bối cảnh các robot còn lại
+  đang chuyển động.
+- Chỉ ghi observation-action của robot người điều khiển.
+
+Các cấu hình dataset 20K:
+
+Dataset       Single   Static   Dynamic   Recovery   Total
+pi_static       6K      12K       0          2K       20K
+pi_dynamic      6K       0       12K         2K       20K
+pi_mixed        6K       6K       6K         2K       20K
+
+Một thí nghiệm tăng dữ liệu lên 60K (gấp ba). Kết luận quan trọng là tăng số
+mẫu không thay thế được chất lượng và sự đa dạng đúng phân phối tương tác.
+
+1.6. Kiến trúc policy trong bài báo
+
+Pipeline:
+    RGB image 96 x 72 x 3
+        -> MobileNetV2 visual encoder
+        -> latent vector z_t có 36 chiều
+        -> chuỗi latent qua LSTM
+        -> Mixture of Experts (MoE)
+        -> velocity command
+
+Cấu hình chính:
+- MobileNetV2 encoder.
+- Latent dimension: 36.
+- Sequence length: 5.
+- Số experts: 2.
+- Mỗi expert là LSTM, hidden size 128, 1 layer.
+- Router: mean-pool lịch sử latent rồi MLP hidden size 64 và softmax.
+- Trọng số expert được dùng để trộn đầu ra velocity.
+- Tổng tham số cấu hình MoE chính khoảng 2.4M; encoder khoảng 2.2M.
+
+Với latent history Z_t và expert outputs y_i:
+    w = softmax(MLP(mean_pool(Z_t)))
+    y_hat = sum_i (w_i * y_i)
+
+Ý nghĩa:
+- Expert có thể học các mẫu hành vi/động lực khác nhau.
+- Router chọn mức đóng góp của từng expert dựa trên lịch sử quan sát.
+- Không cần gán thủ công mỗi expert thành một skill riêng.
+- Toàn bộ hệ thống được huấn luyện end-to-end.
+
+Lưu ý về sequence length: dùng giá trị paper là 5. Không tự ý diễn giải thành
+6 frame do cách viết chỉ số trong một sơ đồ có thể gây nhầm lẫn.
+
+1.7. Loss functions
+
+Behaviour Cloning:
+    L_BC = Huber(y_true, y_pred; delta=1)
+
+Routing regularization:
+    L_routing = sum_i w_i * log(w_i)
+
+Đây là tổng w log w, tức âm entropy. Khi cộng hệ số dương vào loss, nó giúp
+tránh router sụp đổ vào một expert duy nhất và khuyến khích phân phối trọng số
+không quá tập trung.
+
+Auxiliary future latent prediction:
+- Dùng decoder/LSTM state để khởi tạo predictor.
+- Predictor dự đoán autoregressive latent ở tương lai.
+- Horizon l = 2 latent steps.
+- So sánh latent dự đoán và latent quan sát được bằng MSE.
+
+    L_world = MSE(z_hat[t+1:t+2], z[t+1:t+2])
+
+Tổng loss:
+    L = L_BC + lambda_1 * L_routing + lambda_2 * L_world
+
+Paper hyperparameters:
+- lambda_1 = 0.005
+- lambda_2 = 0.0005
+- Huber delta = 1.0
+- Optimizer: AdamW
+- Batch size: 128
+- Learning rate: 1e-4
+- Weight decay: 1e-4
+- Epochs: 30
+- Future prediction horizon: 2
+
+Warm-up future loss:
+- Dataset 20K: bật từ epoch 10 rồi ramp 10 epoch.
+- Dataset 60K: bật từ epoch 3 rồi ramp 10 epoch.
+
+Future prediction là auxiliary objective, không phải một world simulator đầy
+đủ. Paper cho thấy nó có thể giúp policy khi có Dynamic data nhưng làm giảm
+performance với Static-only data. Không nên mặc định thêm loss là luôn tốt.
+
+1.8. Phát hiện thực nghiệm chính
+
+- Trong thí nghiệm 10 robot, pi_static tốt hơn pi_dynamic về throughput; paper
+  báo cáo Welch p=0.027. Phiên bản thí nghiệm operator chỉ nhìn onboard camera
+  báo p=0.005.
+- Dynamic data có thể có supervision nhiễu/không nhất quán do congestion và
+  tình huống tương tác phức tạp.
+- pi_dynamic có quãng đường trung bình ngắn hơn (khoảng 8.0 +/- 0.5 m) so với
+  pi_static (khoảng 10.5 +/- 2.3 m), nhưng không vì vậy mà throughput tốt hơn.
+- Onboard-only demonstration tốt hơn dữ liệu operator nhìn toàn cảnh trong
+  thí nghiệm liên quan, cho thấy train observation nên khớp deploy observation.
+- Khi tăng số robot từ 10 lên 20, throughput của pi_static suy giảm; dữ liệu
+  20K chưa đại diện đủ điều kiện đông đúc.
+- Tăng dataset lên 60K giúp pi_static, đặc biệt khi deploy 20 robot; lợi ích
+  với pi_dynamic hạn chế hơn.
+- Recovery ít quan trọng hơn ở 10 robot nhưng quan trọng ở 20 robot.
+- Bỏ Single vẫn có thể chạy nhưng Single giúp kết quả ở quy mô lớn.
+- Phân phối số robot lúc thu thập (10 hay 20) tạo trade-off in-distribution.
+- MoE tốt hơn decoder LSTM đơn; 2 experts thường đủ; routing regularization
+  quan trọng. LSTM tăng hidden size (ví dụ hidden 191) vẫn không bằng MoE có
+  parameter count gần tương đương trong ablation được báo cáo.
+- Bài báo không nghiên cứu tightly coupled collaboration hoặc inter-robot
+  communication; trọng tâm là decentralized coordination quy mô lớn.
+
+Bài báo còn có bài toán màu: hộp đỏ/vàng đưa về goal tương ứng ở bốn góc,
+workspace khoảng 2 x 2 m, dataset khoảng 15K; mixed không luôn vượt static ở
+thí nghiệm 3/6 robot.
+
+===============================================================================
+2. QUYẾT ĐỊNH THIẾT KẾ CỦA DỰ ÁN V2
+===============================================================================
+
+2.1. Vì sao giữ robot V2 thay vì đổi sang Raspberry Pi Mouse
+
+Phần cứng thật của người dùng có giới hạn và không có Raspberry Pi/depth camera
+chuyên dụng. Do đó ta giữ hình học V2 và dùng stereo RGB để tạo depth bằng
+stereo matching. Mục tiêu là:
+- Duy trì một robot V2 thống nhất cho Gazebo và phần cứng thực.
+- Tái tạo ý tưởng solo-demo -> visuomotor policy -> multi-robot coordination.
+- Bổ sung stereo/depth/tracking/geometry như nhánh nghiên cứu mở rộng.
+- Không giả vờ rằng V2 là cấu hình gốc của paper.
+
+2.2. Hai track nghiên cứu
+
+TRACK A – Paper-style baseline:
+- Một RGB camera (có thể lấy camera trái của stereo rig).
+- Resize 96 x 72 x 3.
+- History length 5.
+- MobileNetV2 -> LSTM-MoE -> velocity.
+- Policy inference 5 Hz.
+- Không đưa depth, IMU, odometry, tracker ID, Gazebo pose hay global pose vào
+  input của baseline.
+
+TRACK B – V2 extension:
+- Left/right RGB + rectified stereo + depth.
+- IMU, encoder/odometry cho state estimation/track compensation.
+- Orange detection, tracking, geometric estimation.
+- Có thể so sánh RGB-only với RGB+Depth hoặc multimodal policy.
+- Mọi thay đổi input phải ghi rõ đây là extension, không phải paper reproduction.
+
+===============================================================================
+3. CẤU HÌNH ROBOT V2 (XACRO/URDF)
+===============================================================================
+
+3.1. Hệ tọa độ
+
+REP-103:
+- base_link: +X hướng trước, +Y trái, +Z lên.
+- base_footprint: frame tham chiếu chiếu trên mặt sàn, root của mô hình.
+- base_link đặt ở tâm chassis, cao hơn base_footprint khoảng 0.105 m.
+- Camera optical frame theo ROS convention: +X sang phải ảnh, +Y xuống ảnh,
+  +Z hướng ra trước theo trục nhìn camera.
+
+Quan trọng: phân biệt base_footprint, base_link và optical frame. Không được
+lấy điểm đã rectify rồi biến đổi trực tiếp bằng TF của raw optical frame mà
+quên quay ngược rectification.
+
+3.2. Kích thước và khối lượng thiết kế
+
+Chassis:
+- Dài 0.30 m, rộng 0.20 m, cao 0.07 m.
+- Mass 0.85 kg (giá trị thiết kế trong Xacro, cần đo/hiệu chỉnh với robot thật).
+- base_center_z = 0.105 m.
+
+Hai bánh chủ động:
+- Bán kính 0.055 m (đường kính 0.11 m).
+- Rộng 0.024 m.
+- Wheel track/separation 0.23 m.
+- Tọa độ dọc bánh wheel_x = -0.020 m so với base link.
+- Khối lượng mỗi wheel khoảng 0.085 kg.
+- Hai joint: left_wheel_joint, right_wheel_joint; continuous.
+
+Caster sau:
+- Bán kính 0.018 m (đường kính 0.036 m).
+- Rộng 0.010 m.
+- Pivot x=-0.100 m, pivot z=-0.060 m theo base_link.
+- Trail 0.020 m.
+- Bánh caster có joint xoay phương đứng (swivel) và joint quay trục bánh.
+- Caster thụ động, không phải wheel drive.
+
+U-shaped pusher:
+- Miệng chữ U mở hướng +X.
+- Thanh ngang phía sau truyền lực đẩy.
+- Hai ray hai bên giữ hộp không trượt ngang.
+- Bề rộng ngoài khoảng 0.20 m; ray dài khoảng 0.148 m.
+- Pusher có collision/visual cho các thanh; không có joint điều khiển/gắp.
+
+Stereo rig:
+- Baseline khai báo: 0.12 m.
+- Toe-in mỗi camera: 0.06 rad, hai camera hướng vào nhau.
+- Relative yaw xấp xỉ 0.12 rad = 6.875 độ.
+- Camera đặt ở vùng trước chassis, height theo Xacro khoảng 0.079 m so với
+  frame lắp đặt được khai báo.
+- Housing khoảng 40 x 42 x 30 mm.
+- Hai camera có body/lens/barrel/retaining ring và optical frames.
+
+IMU:
+- Topic: /robot1/imu/data.
+- Frame: imu_link.
+- Update rate: 100 Hz.
+- Noise sigma angular velocity: 0.002 (mỗi trục, theo Xacro).
+- Noise sigma linear acceleration: 0.02 (mỗi trục, theo Xacro).
+- IMU đo angular velocity và linear acceleration; không trực tiếp đo vị trí
+  tuyệt đối. Tích phân accelerometer sẽ drift nếu không được fusion/constraint.
+
+Camera simulation:
+- Resolution 640 x 480.
+- RGB, Gazebo format R8G8B8.
+- Horizontal FOV = 2.094395 rad = 120 độ.
+- Update rate 30 Hz.
+- Clip near 0.05 m, far 8 m.
+- Hai raw image topics và hai CameraInfo topics.
+
+3.3. Khối lượng và thông số cần coi là giả định
+
+Mass, inertia và friction đang nằm trong Xacro/SDF là giá trị mô phỏng thiết kế,
+không phải tất cả đã được đo từ phần cứng thật. Đặc biệt:
+- Chassis mass 0.85 kg.
+- Wheel mass ~0.085 kg mỗi bánh.
+- Camera mass ~0.035 kg mỗi module.
+- Pusher mass ~0.12 kg.
+- Stereo bar mass ~0.060 kg.
+- Cần đo robot thực và tune physics trước khi tuyên bố mô phỏng định lượng khớp
+  hardware.
+
+===============================================================================
+4. ĐỘNG HỌC DIFFERENTIAL DRIVE, ENCODER VÀ ODOMETRY
+===============================================================================
+
+4.1. Ký hiệu
+
+r = bán kính bánh (m), V2 r=0.055 m.
+L = khoảng cách hai bánh (m), V2 L=0.23 m.
+omega_L, omega_R = vận tốc góc bánh trái/phải (rad/s).
+v = vận tốc tịnh tiến robot (m/s).
+Omega = vận tốc quay quanh trục z (rad/s).
+
+4.2. Forward kinematics
+
+    v     = (r/2) * (omega_R + omega_L)
+    Omega = (r/L) * (omega_R - omega_L)
+
+Diễn giải:
+- Hai bánh cùng tốc độ cùng chiều -> robot tiến/lùi.
+- Bánh phải nhanh hơn bánh trái -> robot quay trái (theo quy ước +z).
+- Hai bánh ngược chiều bằng nhau -> quay tại chỗ.
+
+4.3. Inverse kinematics
+
+Từ lệnh thân robot [v, Omega] sang tốc độ bánh:
+
+    omega_L = (v - (L/2)*Omega) / r
+    omega_R = (v + (L/2)*Omega) / r
+
+Với V2:
+    omega_L = (v - 0.115*Omega) / 0.055
+    omega_R = (v + 0.115*Omega) / 0.055
+
+4.4. Odometry tích phân
+
+Trong hệ world/odom:
+    x_dot = v*cos(theta)
+    y_dot = v*sin(theta)
+    theta_dot = Omega
+
+Euler đơn giản với dt:
+    x[k+1] = x[k] + v*dt*cos(theta[k])
+    y[k+1] = y[k] + v*dt*sin(theta[k])
+    theta[k+1] = wrap(theta[k] + Omega*dt)
+
+Từ encoder wheel positions:
+    delta_s_L = r * delta_phi_L
+    delta_s_R = r * delta_phi_R
+    delta_s   = (delta_s_R + delta_s_L)/2
+    delta_theta = (delta_s_R - delta_s_L)/L
+
+Odometry từ wheel encoder có sai số do wheel slip, đường kính bánh sai, wheel
+separation sai, bề mặt và contact. Trong simulation, Ground Truth Pose của
+Gazebo chỉ dành cho evaluator. Không dùng GT pose làm input policy.
+
+4.5. Controller hiện tại
+
+- controller_manager update_rate = 100 Hz.
+- diff_drive_controller:
+  left_wheel_names = [left_wheel_joint]
+  right_wheel_names = [right_wheel_joint]
+  wheel_separation = 0.23 m
+  wheel_radius = 0.055 m
+  position_feedback = true
+  open_loop = false
+  enable_odom_tf = true
+  odom_frame_id = odom
+  base_frame_id = base_footprint
+  publish_rate = 50 Hz
+  cmd_vel_timeout = 0.5 s (theo file controller YAML hiện tại)
+  giới hạn trong YAML hiện tại: linear x ±0.50 m/s, angular z ±2.50 rad/s;
+  gia tốc linear ±0.80 m/s^2; angular acceleration/deceleration ±3.0 rad/s^2.
+- ROS 2 Jazzy diff_drive_controller nhận geometry_msgs/msg/TwistStamped ở
+  topic /robot1/diff_drive_controller/cmd_vel theo cấu hình hiện tại.
+- Encoder simulation = joint position (rad) và velocity (rad/s), không phải
+  raw pulse count. Hardware thật phải đổi encoder ticks -> rad.
+
+===============================================================================
+5. GAZEBO BOX-COLLECTION WORLD
+===============================================================================
+
+5.1. Cấu trúc vật lý
+
+- Workspace 3.5 x 3.5 m.
+- Bốn tường bao.
+- Sàn ghép từ các slab để tạo khoảng hở thực sự phía trên hố; không có ground
+  plane nguyên tấm che kín dưới hố.
+- Carpet đen 1 x 1 m, được biểu diễn thành các panel bao quanh hố.
+- Hố 0.5 x 0.5 m, sâu 0.145 m, có thành và đáy riêng.
+- Tháp màu red/blue/yellow làm marker mục tiêu.
+- 28 dynamic orange boxes: 0.08 x 0.08 x 0.10 m.
+- Vị trí ban đầu cố định theo seed 42 và được ghi trong CSV layout.
+- Vị trí spawn robot mặc định trong Box Collection world: x=-1.30, y=-1.30,
+  z=0.01, yaw=0 (có thể override launch arguments).
+
+5.2. Vật lý hộp – giả định simulation
+
+- Mass box: 0.12 kg.
+- Friction coefficient ban đầu: 0.65.
+- Đây là giả định kỹ thuật ban đầu vì paper không cung cấp toàn bộ contact/mass
+  properties; không phải thông số thực nghiệm gốc.
+- Phải kiểm tra hộp có thể trượt, xoay, va chạm và rơi xuống hố tự nhiên.
+- Không dùng teleport/script kéo hộp về vùng đích.
+
+5.3. Điều kiện evaluator
+
+Node BoxCollectionEvaluator nhận Gazebo Pose của 28 hộp qua các topic riêng.
+- Nếu tâm hộp nằm trong vùng carpet đen theo giới hạn hình vuông ±0.5 m nhưng
+  ngoài hố trung tâm (±0.25 m), trạng thái là DELIVERED_CARPET.
+- Nếu tâm ở trong footprint hố (|x|,|y| <= 0.25 m) và z <= -0.02 m, trạng thái
+  là DELIVERED_PIT.
+- Khi đã giao, hộp được latch (giữ trạng thái delivered), không bị trừ nếu sau
+  đó bị tác động/văng ra.
+- Đây là task evaluator ground-truth; không kết nối vào perception/policy.
+
+5.4. Metrics task
+
+- expected_boxes = 28.
+- delivered_boxes, remaining_boxes.
+- progress_fraction = delivered/28.
+- progress_percent = 100*progress_fraction.
+- elapsed_sim_seconds.
+- throughput_boxes_per_sim_minute = delivered / (elapsed/60).
+- rolling 60-second count and rate.
+- first_delivery_after_start_sec.
+- mean/median inter-delivery interval.
+
+===============================================================================
+6. S1.1–S1.2: GROUND TRUTH EVALUATION, COLLISION VÀ DEADLOCK
+===============================================================================
+
+6.1. Ground-truth separation
+
+Gazebo xuất pose qua PosePublisher. Task evaluator/depth validator/collision
+monitor/deadlock monitor có thể nhận dữ liệu world-state để đánh giá. Các node
+này không được nối vào policy observation.
+
+6.2. Collision Monitor
+
+- World-level Gazebo Contact system.
+- 50 Hz contact sensors trên từng 28 hộp và các tường biên/hố.
+- Tổng 36 streams được bridge qua ros_gz_bridge sang
+  ros_gz_interfaces/msg/Contacts.
+- Node debounce contact samples thành collision episodes để không đếm mọi
+  message liên tục trong một cú va chạm như episode riêng.
+- Phân loại:
+  robot_box: tương tác cần thiết để đẩy hộp, không mặc định là lỗi.
+  robot_wall: robot va tường.
+  box_box: hộp va hộp.
+  box_wall: hộp va tường/thành hố.
+  robot_robot: sẽ cần sensor robot-side khi mở rộng multi-robot.
+- Contact support với floor/carpet được lọc hoặc không tính là va chạm gây hại.
+- Debounce gap mặc định khoảng 0.5 s; active timeout khoảng 0.2 s.
+
+Topics:
+  /box_collection/collision/ready       std_msgs/Bool
+  /box_collection/collision/event_count std_msgs/UInt32
+  /box_collection/collision/metrics     std_msgs/String (JSON)
+  /box_collection/collision/events      std_msgs/String (JSON)
+
+6.3. Deadlock / stuck monitor
+
+Không dùng wheel odometry để phát hiện chassis kẹt vì bánh có thể quay trượt
+trong khi thân đứng yên. Node sử dụng Ground Truth Pose của thân robot từ
+Gazebo, tính tốc độ body bằng finite difference.
+
+v_GT = sqrt((x_t-x_{t-1})^2 + (y_t-y_{t-1})^2) / dt
+omega_GT = abs(wrap(theta_t-theta_{t-1})) / dt
+
+Heuristic hiện tại:
+- cmd stale timeout: 0.75 s.
+- pose stale timeout: 0.50 s.
+- lệnh linear đủ lớn: |v_cmd| > 0.04 m/s.
+- lệnh angular đủ lớn: |omega_cmd| > 0.10 rad/s.
+- body linear speed nhỏ hơn 0.015 m/s.
+- body angular speed nhỏ hơn 0.05 rad/s.
+- duy trì điều kiện khoảng 3 s -> robot_stuck.
+- không giao thêm hộp khoảng 20 s khi command active -> task_stalled.
+
+Robot stuck != task stalled:
+- robot_stuck là cơ thể robot không di chuyển mặc dù lệnh di chuyển còn hiệu lực.
+- task_stalled chỉ là chưa có thêm hộp giao trong một khoảng thời gian; có thể
+  xảy ra bình thường khi robot đang tìm kiếm, không tự động đồng nghĩa deadlock.
+
+Topics:
+  /box_collection/deadlock/robot_stuck std_msgs/Bool
+  /box_collection/deadlock/task_stalled std_msgs/Bool
+  /box_collection/deadlock/metrics     std_msgs/String
+  /box_collection/deadlock/events      std_msgs/String
+
+Đây mới là heuristic một robot. Swarm deadlock/livelock detection cần thêm
+trạng thái và robot-robot contact trên mỗi robot sau này.
+
+===============================================================================
+7. S2.1: STEREO CALIBRATION, RECTIFICATION, DISPARITY VÀ DEPTH
+===============================================================================
+
+7.1. Vì sao phải rectify
+
+Hai camera V2 toe-in, mỗi bên 0.06 rad. Raw images không phải stereo pair song
+song. Cùng một điểm 3D không nhất thiết nằm trên cùng hàng ảnh. Không được áp
+dụng công thức disparity chuẩn trực tiếp lên raw images.
+
+Rectification đưa hai ảnh về hình học tương đương camera song song để epipolar
+lines nằm gần ngang và điểm tương ứng có cùng row.
+
+7.2. Raw intrinsic ước lượng pinhole
+
+Với width W=640, horizontal FOV=120 độ:
+
+    fx = W / (2*tan(FOV/2))
+       = 640 / (2*tan(60 độ))
+       ~= 184.752 px
+
+CameraInfo runtime là nguồn chính xác được dùng bởi node, không hard-code fx.
+
+7.3. Stereo extrinsic thực tế đã quan sát từ TF
+
+Transform right optical <- left optical theo dữ liệu runtime người dùng đã gửi:
+- Translation xấp xỉ [-0.119784, 0, 0.007196] m.
+- Baseline norm = 0.12 m.
+- Relative yaw = 0.12 rad = 6.875 độ.
+
+Sau rectification, CameraInfo người dùng nhận:
+- fx rectified = P[0] ~= 211.31586 px.
+- fy rectified = P[5] ~= 211.31586 px.
+- cx ~= 320.01834 px.
+- cy ~= 240.00636 px.
+- P_right[3] ~= -25.3579 px.
+- Rectified baseline report ~= 0.12 m.
+
+Fx rectified khác raw fx vì cv2.stereoRectify với alpha=0 có thể thay đổi
+focal và crop/scale vùng ảnh hợp lệ. Luôn đọc P runtime.
+
+7.4. StereoRectify
+
+Node stereo_rectify_node:
+- Synchronize raw left/right Image và CameraInfo.
+- Đọc K,D từ CameraInfo.
+- Đọc relative rotation R và translation T từ TF.
+- Gọi cv2.stereoRectify.
+- Tạo undistort/rectify maps.
+- Remap hai ảnh.
+- Publish rectified images, CameraInfo, ready và JSON report.
+
+Kết quả gồm R1, R2, P1, P2, Q (Q được tính bởi OpenCV dù report hiện tập trung
+vào R1/R2/P1/P2 và baseline/focal).
+
+7.5. Disparity và metric depth
+
+Với ảnh rectified, disparity:
+    d = u_left - u_right
+
+Depth pinhole rectified:
+    Z = f_rect * B_rect / d
+
+Trong đó:
+- f_rect = P_left[0,0] (pixel).
+- B_rect lấy từ projection matrices/baseline report (m).
+- d là disparity pixel.
+
+Point back-projection:
+    X = (u-cx)*Z/fx
+    Y = (v-cy)*Z/fy
+    Z = depth(u,v)
+
+StereoSGBM defaults:
+- min_disparity = 0.
+- num_disparities = 96 (multiple of 16).
+- block_size = 5 (odd, >=3).
+- uniqueness_ratio = 8.
+- speckle_window_size = 80.
+- speckle_range = 2.
+- min_depth_m = 0.20.
+- max_depth_m = 8.0.
+- depth processing max rate = 5 Hz.
+- rectification max rate = 10 Hz.
+- camera stream = 30 Hz.
+
+Giới hạn khoảng gần do disparity search:
+    Z_min_search ~= f*B/num_disparities
+                    ~= 211.316*0.12/96
+                    ~= 0.264 m
+Vì vậy min_depth=0.20 m không có nghĩa matcher chắc chắn đo được đến 0.20 m;
+search range 96 disparity mới là giới hạn thực gần hơn.
+
+7.6. Ý nghĩa depth topic
+
+- /robot1/stereo/disparity: stereo_msgs/DisparityImage, disparity float.
+- /robot1/stereo/depth: sensor_msgs/Image encoding 32FC1, mét; invalid pixels
+  có thể NaN.
+- depth_preview và disparity_preview là ảnh màu trực quan, KHÔNG dùng như depth
+  metric. Thuật toán phải dùng 32FC1/DisparityImage.
+
+7.7. Các failure mode
+
+- Textureless/flat/reflective object.
+- Occlusion và vùng không tương ứng.
+- Camera unsynchronized.
+- Rectification/TF sai.
+- FOV lớn khiến vật ở xa có disparity thấp.
+- SGBM speckle và sai correspondence.
+- Calibration Gazebo là synthetic; camera thật cần checkerboard/target calibration.
+
+===============================================================================
+8. S2.2: KIỂM ĐỊNH DEPTH VỚI GROUND TRUTH GAZEBO
+===============================================================================
+
+8.1. Vì sao cần validator
+
+Ảnh depth nhìn có vẻ hợp lý không chứng minh giá trị metric đúng. Cần so với
+khoảng cách kỳ vọng từ geometry và pose Gazebo.
+
+8.2. Luồng validator
+
+- Nhận depth 32FC1.
+- Nhận rectified left image, rectified CameraInfo P1, R1 report.
+- Nhận world pose robot và pose của 28 hộp từ Gazebo PosePublisher.
+- Nhận TF base_footprint -> raw left optical frame.
+- Tính world_T_camera = world_T_base * base_T_camera_raw.
+- Với mỗi hộp, ray từ camera qua tâm hộp và giao OBB để lấy mặt gần nhất nhìn
+  thấy; bỏ nếu bị hộp khác che hoặc ngoài ảnh.
+- Project điểm surface vào ảnh rectified bằng R1 và P1.
+- Lấy median 3x3 patch depth quanh pixel.
+- So sánh measured Z và expected rectified Z.
+
+8.3. Sai số
+
+    e_i = Z_stereo_i - Z_GT_i
+    MAE = mean(abs(e_i))
+    RMSE = sqrt(mean(e_i^2))
+    MedianAE = median(abs(e_i))
+    P90 = percentile(abs(e_i), 90)
+    inlier_rate = proportion(abs(e_i) <= tolerance)
+
+Tolerance khởi đầu 0.10 m. Một frame có ít nhất 3 mẫu hợp lệ được gắn status
+VALIDATED. VALIDATED chỉ nghĩa là phép so sánh chạy đủ mẫu; không đồng nghĩa
+camera đạt accuracy threshold. Cần khảo sát nhiều khoảng cách, vị trí và góc.
+
+8.4. Ground-truth boundary
+
+Validator có quyền đọc Gazebo world poses; stereo rectifier/depth/perception
+không được đọc GT. Ground truth không bao giờ đưa sang policy.
+
+8.5. Lỗi triển khai đã gặp và đã sửa
+
+- S2.2.1 preview fix: ảnh overlay phải tiếp tục publish ngay cả khi metadata/
+  ground truth chưa đủ, để tránh topic ảnh rỗng gây khó debug.
+- S2.2.2 report fix: rectification report phải chứa cả
+  rectification_rotation_left (R1) và right (R2). CameraInfo.rectified đã có
+  R nhưng validator cần R1 từ report theo hợp đồng code.
+- Người dùng xác nhận sau đó node trả VALIDATED và các điểm tâm/sample.
+
+===============================================================================
+9. S2.3: RGB-D ORANGE BOX PERCEPTION
+===============================================================================
+
+9.1. Ranh giới thông tin
+
+Node perception chỉ dùng:
+- Rectified left RGB image.
+- Metric depth 32FC1.
+- Rectified CameraInfo.
+- TF static camera -> base_footprint.
+
+Không dùng:
+- /model/orange_box_XX/pose.
+- Robot Gazebo GT pose.
+- Task evaluator metrics.
+- Wheel odometry/encoder/IMU làm detection input.
+
+9.2. HSV segmentation
+
+Gazebo orange material xấp xỉ RGB (0.95, 0.28, 0.025). RGB -> HSV, dùng
+threshold khởi đầu:
+- hue_min = 3, hue_max = 30.
+- saturation_min = 100.
+- value_min = 60.
+- morphology kernel = 3.
+- min_area_px = 120.
+- min_width_px/min_height_px = 5.
+- min_extent = 0.20.
+- max_aspect_ratio = 4.0.
+- max_detections = 28.
+
+Contour pipeline:
+1. RGB/BGR -> HSV.
+2. Threshold mask theo HSV.
+3. Morphological cleanup.
+4. Contour extraction.
+5. Loại vùng quá nhỏ/không hợp hình dạng.
+6. Erode candidate mask để tránh pixel nền tại biên.
+
+HSV là heuristic phụ thuộc ánh sáng, tone mapping và exposure. Cần tune theo
+mask preview, thay từng nhóm tham số một lần.
+
+9.3. Ghép depth và robust statistics
+
+- Chỉ nhận depth finite trong khoảng 0.20–5.0 m ở perception node.
+- Tối thiểu 8 pixel depth hợp lệ cho mỗi detection (config hiện tại).
+- Tính median và MAD để loại depth outliers.
+- Median ít nhạy với mismatch/outlier hơn mean.
+
+MAD = median(|z_i - median(z)|)
+Có thể dùng robust threshold dựa trên MAD để lọc pixel lệch.
+
+9.4. Back-projection và coordinate transform
+
+Từ pixel rectified (u,v), depth Z và P:
+    X_rect = (u-cx)*Z/fx
+    Y_rect = (v-cy)*Z/fy
+    Z_rect = Z
+
+Rectified point nằm trong rectified optical basis. TF là transform của raw
+left_camera_optical_frame. Do đó:
+    P_raw = R1^T * P_rect
+Sau đó:
+    P_base = T_base<-camera_raw * P_raw
+
+REP-103 base:
+- +X trước.
+- +Y trái.
+- +Z lên.
+Optical:
+- +X phải ảnh.
+- +Y xuống ảnh.
+- +Z hướng nhìn.
+
+Output centers_camera/centers_base là robust visible-surface centroid, KHÔNG
+phải geometric center đầy đủ của khối hộp. Một mặt nhìn thấy không cung cấp
+độ sâu hidden face phía sau.
+
+9.5. Topics
+
+Inputs:
+- /robot1/stereo/left/image_rect             sensor_msgs/Image
+- /robot1/stereo/depth                       sensor_msgs/Image 32FC1
+- /robot1/stereo/left/camera_info_rect       sensor_msgs/CameraInfo
+- /tf, /tf_static
+
+Outputs:
+- /robot1/perception/orange_boxes/overlay       Image
+- /robot1/perception/orange_boxes/mask          Image mono8
+- /robot1/perception/orange_boxes/centers_camera PoseArray
+- /robot1/perception/orange_boxes/centers_base  PoseArray
+- /robot1/perception/orange_boxes/markers       MarkerArray
+- /robot1/perception/orange_boxes/metrics       String JSON
+- /robot1/perception/orange_boxes/ready         Bool
+
+PoseArray order tương ứng detections array trong metrics của cùng frame; chưa
+có temporal IDs tại S2.3.
+
+===============================================================================
+10. S2.4: PERCEPTION EVALUATION
+===============================================================================
+
+10.1. Vì sao tách evaluator
+
+Perception phải tự phát hiện từ camera; evaluator có quyền dùng Gazebo GT để đo
+chất lượng. Hai luồng không được trộn.
+
+10.2. Ground-truth projection
+
+- Nhận pose robot và 28 box poses.
+- Dùng box dimensions 0.08 x 0.08 x 0.10 m để tạo OBB.
+- Project 8 corners lên ảnh rectified.
+- Ray visibility sampling grid kiểm tra hộp bị hộp khác che.
+- Loại GT không nhìn thấy đủ hoặc projected area quá nhỏ.
+- So sánh GT bbox với detection bbox bằng IoU.
+- Matching hiện tại dùng greedy IoU, không phải Hungarian; threshold ban đầu
+  min_match_iou=0.10.
+
+10.3. Metrics
+
+TP = matched detection-GT pair.
+FP = detection không có GT match.
+FN = visible GT box không được detection match.
+
+Precision = TP/(TP+FP)
+Recall = TP/(TP+FN)
+F1 = 2*Precision*Recall/(Precision+Recall)
+
+Định vị 3D:
+- So sánh visible surface point do S2.3 đo với surface point tham chiếu từ OBB,
+  không so trực tiếp với hidden geometric center.
+- 3D error, MAE, RMSE, median, P90, Z MAE.
+
+10.4. Giới hạn
+
+- IoU threshold 0.10 và visibility grid là tham số ban đầu.
+- Occlusion filtering chủ yếu mô hình hóa che khuất giữa 28 boxes; không phải
+  mọi visual/collision objects trong toàn world.
+- Gazebo pose topic geometry_msgs/Pose không có source timestamp; freshness dựa
+  trên thời điểm receipt ROS clock.
+- Greedy IoU có thể không tối ưu trong scene overlap đông; có thể nâng cấp
+  matching toàn cục sau này.
+- GT chỉ thuộc evaluator, không thuộc policy.
+
+===============================================================================
+11. S2.5: MULTI-FRAME TRACKING
+===============================================================================
+
+11.1. Vì sao cần odom frame
+
+base_footprint chuyển động cùng robot. Nếu track trực tiếp trong base frame,
+hộp đứng yên ngoài đời sẽ có vẻ chuyển động khi robot chạy/quay.
+
+Do đó detection base-frame được đổi sang odom bằng wheel odometry tại đúng
+timestamp (interpolate từ odom history nếu có thể):
+    P_odom = T_odom<-base(t) * P_base
+
+11.2. Kalman constant-velocity model 2D
+
+State:
+    x = [px, py, vx, vy]^T
+
+Với dt:
+    F = [[1,0,dt,0],
+         [0,1,0,dt],
+         [0,0,1,0],
+         [0,0,0,1]]
+
+Measurement:
+    z = [px, py]^T
+    H = [[1,0,0,0],
+         [0,1,0,0]]
+
+Prediction:
+    x^- = F x
+    P^- = F P F^T + Q
+
+Innovation:
+    y = z - H x^-
+    S = H P^- H^T + R
+    K = P^- H^T S^-1
+
+Update:
+    x = x^- + K y
+    P = (I-KH)P^-
+
+Z được smoothing riêng; tracker chủ yếu association trên XY.
+
+11.3. Data association
+
+- Dự đoán vị trí mỗi track.
+- Tính Euclidean distance/cost giữa predicted track và detection.
+- Gate distance <= 0.35 m.
+- Dùng Hungarian global assignment, có dummy unmatched columns để cho phép
+  track unmatched và detection chưa match.
+- Track matched -> Kalman update.
+- Track unmatched -> missed/coasting.
+- Detection unmatched -> tạo track ID mới.
+
+11.4. Lifecycle và config
+
+- gate_distance_m = 0.35.
+- max_age_sec = 1.25.
+- min_hits = 2.
+- measurement_sigma_m = 0.045 m.
+- acceleration_noise = 0.8.
+- max_odom_sync_sec = 0.15 s.
+- odom_history_size = 300.
+
+Trạng thái:
+- tentative: mới có, chưa đủ min_hits.
+- confirmed: đã quan sát lặp lại đủ lần.
+- coasting: tạm mất detection nhưng còn được giữ.
+- deleted: quá max_age, bị xóa.
+
+Track ID do tracker tạo, không phải Gazebo model ID và không tồn tại vĩnh viễn.
+ID reset khi process restart hoặc simulation time nhảy lùi.
+
+11.5. Topics
+
+Inputs:
+- /robot1/perception/orange_boxes/centers_base PoseArray.
+- /robot1/diff_drive_controller/odom Odometry.
+- TF nếu frame detection khác odom child frame.
+
+Outputs:
+- /robot1/perception/orange_boxes/tracks String JSON (IDs, state, pos, vel,
+  age, hits, missed frames).
+- /robot1/perception/orange_boxes/tracks/poses PoseArray trong odom (PoseArray
+  không mang ID; dùng JSON/MarkerArray nếu cần ID liên kết).
+- /robot1/perception/orange_boxes/tracks/markers MarkerArray.
+- /robot1/perception/orange_boxes/tracking/metrics String.
+- /robot1/perception/orange_boxes/tracking/ready Bool.
+
+Giới hạn:
+- Track trên visible-surface centroid; thay đổi viewpoint có thể làm centroid
+  dịch chuyển dù hộp vật lý không đổi.
+- Hộp gần nhau/cắt nhau có thể đổi ID.
+- Odom drift ngoài đời; simulation tốt hơn, hardware cần fusion/visual odom.
+- Đây là extension, paper baseline không yêu cầu tracker ID/odom input.
+
+===============================================================================
+12. S2.6: ƯỚC LƯỢNG HÌNH HỌC HỘP
+===============================================================================
+
+12.1. Mục đích
+
+S2.3 chỉ có visible-surface centroid; S2.5 track điểm đó. S2.6 cố gắng ước
+lượng geometry của mặt đứng hộp và geometric centre xấp xỉ bằng prior kích
+thước hộp đã biết.
+
+12.2. Inputs
+
+- /robot1/stereo/left/image_rect Image.
+- /robot1/stereo/depth Image 32FC1.
+- /robot1/perception/orange_boxes/mask Image mono8.
+- /robot1/stereo/left/camera_info_rect CameraInfo.
+- /robot1/diff_drive_controller/odom Odometry.
+- /robot1/perception/orange_boxes/tracks String JSON.
+- TF camera/base.
+
+Node không subscribe Gazebo box poses, Gazebo robot GT pose hoặc evaluator GT.
+
+12.3. Tạo point cloud cho từng orange candidate
+
+- Đồng bộ RGB, depth, mask, CameraInfo (slop 0.08 s; queue 8).
+- Rate tối đa 5 Hz.
+- Erode mask với kernel 3.
+- Lấy finite depth trong [0.20, 5.0] m.
+- Back-project pixels bằng P rectified.
+- Quay ngược R1.T để từ rectified optical basis về raw optical basis.
+- Dùng TF camera raw -> base_footprint.
+- Lọc điểm theo candidate mask và giới hạn max 800 points/detection.
+
+12.4. RANSAC plane fit
+
+Giả sử mặt hộp là mặt phẳng đứng.
+- Min points = 18.
+- RANSAC iterations = 160.
+- Plane threshold = 0.008 m.
+- max_normal_abs_z = 0.35 (lọc mặt tương đối thẳng đứng; normal gần nằm
+  ngang trên mặt phẳng XY, thành phần z không lớn).
+- Tối đa 500 points dùng cho RANSAC subsample.
+- Yêu cầu inlier count >= max(min_points, ceil(0.18*N)).
+- Sau khi chọn inliers, SVD refine plane normal.
+- Định hướng normal ra phía camera bằng dot(normal, camera-face_center).
+
+Plane equation:
+    n dot (p - p0) = 0
+Khoảng cách điểm tới plane:
+    d_i = abs(n dot (p_i - p0))
+Inlier nếu d_i <= threshold.
+
+12.5. PCA cạnh ngang
+
+Lấy XY của plane inliers, tính covariance:
+    C = (X_centered^T X_centered)/(N-1)
+Eigenvector có eigenvalue lớn nhất là edge direction trong XY.
+Edge yaw:
+    yaw_edge = atan2(edge_y, edge_x)
+
+Do footprint 0.08 x 0.08 m là hình vuông không có marker bất đối xứng:
+- Absolute yaw 0–360 độ không observable duy nhất.
+- Chỉ báo yaw_edge modulo pi/2 (90 độ).
+- Face normal/approach yaw được báo riêng.
+
+12.6. Face centre và full centre estimate
+
+Face centre là median của inlier 3D points.
+Normal được hướng về camera.
+Với cạnh footprint 0.08 m, ước lượng geometric centre:
+    P_geometric ~= P_face - n*(0.08/2)
+    z_geometric = 0.10/2 = 0.05 m (floor-support prior)
+
+Đây là approximation dựa vào box prior:
+- hộp vẫn nằm trên sàn;
+- hộp có footprint 8x8 cm;
+- mặt fit thực sự là side face;
+- không nghiêng, không bị biến dạng.
+
+Observed width/height dùng percentile 95-5 của inlier extents; chúng có thể
+nhỏ hơn kích thước thật do partial occlusion/cropping.
+
+Confidence kết hợp:
+- plane inlier ratio.
+- plane RMSE score.
+- observed-width closeness với 0.08 m.
+- point-count score.
+
+12.7. Track ID association
+
+Node có odom history và tracks JSON:
+- Đổi surface point base -> odom tại timestamp tương ứng.
+- Interpolate planar robot pose khi có hai odom sample lân cận.
+- Match gần track position trong gate 0.30 m.
+- Track timestamp tolerance khoảng 0.30 s; odom sync tolerance 0.15 s.
+- Track IDs chỉ gắn nhãn/associate; geometry chính vẫn lấy từ RGB-D.
+
+12.8. S2.6 config
+
+- box_xy_size_m = 0.08.
+- box_height_m = 0.10.
+- min_depth = 0.20 m, max_depth = 5.0 m.
+- min_area_px = 120.
+- erode_kernel = 3.
+- min_points = 18.
+- max_points_per_detection = 800.
+- plane_threshold = 0.008 m.
+- max_normal_abs_z = 0.35.
+- ransac_iterations = 160.
+- min_face_width = 0.018 m.
+- max_face_width = 0.14 m.
+- max_rate = 5 Hz.
+
+12.9. Outputs
+
+- /robot1/perception/orange_boxes/geometry String JSON.
+- /robot1/perception/orange_boxes/geometry/poses PoseArray, approximate
+  geometric centres in base_footprint.
+- /robot1/perception/orange_boxes/geometry/markers MarkerArray: cube, arrow,
+  labels.
+- /robot1/perception/orange_boxes/geometry/overlay Image.
+- /robot1/perception/orange_boxes/geometry/metrics String.
+- /robot1/perception/orange_boxes/geometry/ready Bool.
+
+===============================================================================
+13. KIẾN TRÚC CODE/ROS 2 HIỆN TẠI
+===============================================================================
+
+13.1. Package structure
+
+Package gốc hiện tại:
+    box_pusher_description
+
+Chứa:
+- urdf/box_pusher_stereo.urdf.xacro
+- config/controllers.yaml
+- config/ros_gz_bridge.yaml (có các overlay mở rộng sau đó)
+- worlds/box_pusher_world.sdf
+- worlds/box_collection_world.sdf (world mở rộng)
+- launch/bringup.launch.py
+- launch/box_collection.launch.py
+- scripts/cmd_vel_keyboard.py
+- scripts/stereo_sync_node.py
+- các script task evaluator/collision/deadlock/stereo/depth/perception/evaluator
+  được bổ sung qua các overlay S1/S2.
+
+Package độc lập:
+- box_pusher_tracking: S2.5 Kalman + Hungarian tracker.
+- box_pusher_geometry: S2.6 RANSAC/PCA box geometry estimator.
+
+Các package dự kiến nhưng CHƯA triển khai ở thời điểm tài liệu này:
+- box_pusher_teleop (hoặc node teleop mở rộng).
+- box_pusher_data / demonstration recorder.
+- box_pusher_learning (MobileNetV2/LSTM/MoE).
+- box_pusher_multi_robot.
+- box_pusher_evaluation mở rộng cho swarm.
+
+13.2. Runtime nodes và vai trò
+
+Infrastructure/control:
+- gz sim: physics, model, collision, sensors.
+- robot_state_publisher: URDF -> TF tree.
+- ros_gz_sensor_bridge: Gazebo Transport <-> ROS 2 sensor/GT topics.
+- gz_ros2_control plugin: kết nối wheel joints và controller manager.
+- controller_manager: quản lý controller.
+- joint_state_broadcaster: xuất joint position/velocity.
+- diff_drive_controller: cmd_vel -> wheel speed, wheel feedback -> odometry.
+
+Task/evaluation:
+- box_collection_task_evaluator: 28 Gazebo box poses -> delivered/progress/throughput.
+- collision_monitor_node: Contacts -> collision episodes/categories.
+- deadlock_monitor_node: cmd_vel + Gazebo body pose -> robot stuck/task stalled.
+- stereo_depth_validation_node: stereo depth + Gazebo GT boxes/robot -> depth error.
+- orange_box_perception_evaluator_node: detections + Gazebo GT -> TP/FP/FN, IoU, 3D error.
+
+Perception:
+- stereo_sync_node: preview/sync images (không phải disparity node).
+- stereo_rectify_node: raw stereo + CameraInfo + TF -> rectified images/CameraInfo.
+- stereo_depth_node: rectified stereo -> disparity + metric depth.
+- orange_box_perception_node: HSV + depth -> visible surface 3D points.
+- orange_box_tracker_node (package box_pusher_tracking): detections + odom -> IDs.
+- orange_box_geometry_node (package box_pusher_geometry): RGB-D mask + tracking + odom -> face/box geometry.
+
+13.3. Luồng dữ liệu tổng thể
+
+GAZEBO PHYSICS / WORLD
+    |                    |                     |
+    | wheel joints       | sensor images/IMU   | world poses/contacts
+    v                    v                     v
+ gz_ros2_control     ros_gz_bridge         evaluator-only bridges
+    |                    |                     |
+ joint states          RGB/CameraInfo/IMU     GT pose/contact
+    |                    |                     |
+    v                    v                     v
+ diff_drive_controller  stereo_rectify/depth   task/collision/deadlock/
+    |                    |                     depth/perception evaluator
+    | odom                v
+    |                 RGB + depth
+    |                    |
+    |                    v
+    |             orange perception
+    |                    |
+    |               centers_base
+    |                    |
+    +---- odom ----------+----> tracker (odom frame)
+                               |
+                               v
+                             tracks
+                               |
+                     RGB-D + mask + tracks + odom
+                               |
+                               v
+                        S2.6 geometry node
+                               |
+                               v
+               geometry centre/face normal/approach yaw
+
+13.4. Launch discipline
+
+- Chỉ chạy một box_collection.launch.py cho một simulator/world instance.
+- Tracking là launch riêng, chạy một lần.
+- Geometry là launch riêng, chạy một lần.
+- Không chạy lặp launch nếu Gazebo đã chạy; nếu không sẽ có duplicate node
+  instances và nhiều publisher lên cùng topic.
+- Kiểm tra:
+    ros2 node list | sort | uniq -c
+- Mỗi node stereo/perception/tracker/geometry chỉ nên có một instance.
+- Publisher count > 1 trên camera_info_rect/report có thể gây dữ liệu không
+  nhất quán và validator nhầm metadata.
+- Dừng launch cũ bằng Ctrl+C trong đúng terminal; không dùng killall python
+  tùy tiện vì có thể dừng các chương trình khác.
+
+===============================================================================
+14. ROS 2 TOPICS QUAN TRỌNG
+===============================================================================
+
+14.1. Command/control
+
+/robot1/diff_drive_controller/cmd_vel
+    geometry_msgs/msg/TwistStamped
+    linear.x = m/s; angular.z = rad/s.
+
+/robot1/joint_states
+    sensor_msgs/msg/JointState
+    name: left_wheel_joint, right_wheel_joint;
+    position rad; velocity rad/s.
+
+/robot1/diff_drive_controller/odom
+    nav_msgs/msg/Odometry
+    wheel-derived odometry; frame odom, child frame base_footprint.
+
+/tf, /tf_static
+    tf2_msgs/msg/TFMessage qua TF graph.
+
+14.2. Sensors
+
+/robot1/stereo/left/image_raw       sensor_msgs/Image
+/robot1/stereo/right/image_raw      sensor_msgs/Image
+/robot1/stereo/left/camera_info     sensor_msgs/CameraInfo
+/robot1/stereo/right/camera_info    sensor_msgs/CameraInfo
+/robot1/imu/data                    sensor_msgs/Imu
+/clock                              rosgraph_msgs/Clock (use_sim_time)
+
+14.3. Stereo
+
+/robot1/stereo/left/image_rect              Image
+/robot1/stereo/right/image_rect             Image
+/robot1/stereo/left/camera_info_rect        CameraInfo
+/robot1/stereo/right/camera_info_rect       CameraInfo
+/robot1/stereo/rectification/ready          Bool
+/robot1/stereo/rectification/report         String JSON
+/robot1/stereo/disparity                    stereo_msgs/DisparityImage
+/robot1/stereo/depth                        Image 32FC1 metres
+/robot1/stereo/depth_preview                Image bgr8 visualization only
+/robot1/stereo/disparity_preview            Image bgr8 visualization only
+/robot1/stereo/depth/metrics                String
+/robot1/stereo/depth/ready                  Bool
+/robot1/stereo/depth_validation/ready       Bool
+/robot1/stereo/depth_validation/metrics     String
+/robot1/stereo/depth_validation/overlay     Image
+
+14.4. Perception S2.3
+
+/robot1/perception/orange_boxes/overlay          Image
+/robot1/perception/orange_boxes/mask             Image mono8
+/robot1/perception/orange_boxes/centers_camera   PoseArray
+/robot1/perception/orange_boxes/centers_base     PoseArray
+/robot1/perception/orange_boxes/markers          MarkerArray
+/robot1/perception/orange_boxes/metrics          String JSON
+/robot1/perception/orange_boxes/ready            Bool
+
+14.5. Evaluation S2.4
+
+/robot1/perception/orange_boxes/evaluation/metrics String
+/robot1/perception/orange_boxes/evaluation/overlay Image
+/robot1/perception/orange_boxes/evaluation/ready Bool
+
+14.6. Tracking S2.5
+
+/robot1/perception/orange_boxes/tracks          String JSON
+/robot1/perception/orange_boxes/tracks/poses    PoseArray in odom (no IDs in PoseArray)
+/robot1/perception/orange_boxes/tracks/markers  MarkerArray
+/robot1/perception/orange_boxes/tracking/metrics String
+/robot1/perception/orange_boxes/tracking/ready  Bool
+
+14.7. Geometry S2.6
+
+/robot1/perception/orange_boxes/geometry          String JSON
+/robot1/perception/orange_boxes/geometry/poses    PoseArray
+/robot1/perception/orange_boxes/geometry/markers  MarkerArray
+/robot1/perception/orange_boxes/geometry/overlay  Image
+/robot1/perception/orange_boxes/geometry/metrics  String
+/robot1/perception/orange_boxes/geometry/ready    Bool
+
+14.8. Ground truth/evaluation
+
+/box_collection/evaluator/ready
+/box_collection/evaluator/delivered_count
+/box_collection/evaluator/remaining_count
+/box_collection/evaluator/progress
+/box_collection/evaluator/metrics
+/box_collection/evaluator/events
+
+/box_collection/collision/ready
+/box_collection/collision/event_count
+/box_collection/collision/metrics
+/box_collection/collision/events
+
+/box_collection/deadlock/robot_stuck
+/box_collection/deadlock/task_stalled
+/box_collection/deadlock/metrics
+/box_collection/deadlock/events
+
+/model/box_pusher/pose
+/model/orange_box_01/pose ... /model/orange_box_28/pose
+    geometry_msgs/Pose, used only for evaluation in sim.
+
+===============================================================================
+15. TƯ DUY THIẾT KẾ CODE HIỆN TẠI
+===============================================================================
+
+15.1. Incremental overlays, không viết lại cả hệ thống
+
+Mỗi milestone được đóng thành overlay tăng dần:
+- S1 tạo world.
+- S1.1 thêm task evaluator.
+- S1.2 thêm collision/deadlock.
+- S2.1 thêm stereo rectification/depth.
+- S2.2 thêm depth validation và report fix.
+- S2.3 thêm orange perception.
+- S2.4 thêm perception evaluator.
+- S2.5 package tracker độc lập.
+- S2.6 package geometry độc lập.
+
+Giữ bản backup trước thay đổi; chỉ thay file liên quan. Không ghi đè URDF,
+controller hoặc world nếu milestone không cần.
+
+15.2. Separation of concerns
+
+Một node nên làm một nhiệm vụ rõ:
+- Rectify không làm object detection.
+- Depth node không đọc Gazebo GT.
+- Perception không biết Gazebo box pose.
+- Evaluator được dùng GT nhưng không phát action.
+- Tracker không làm task planning.
+- Geometry estimator không tự điều khiển robot.
+- Controller không biết logic imitation learning; chỉ nhận body velocity.
+
+15.3. Data boundary / no leakage
+
+Policy baseline tương lai chỉ được nhận input mà robot thật có.
+GT world poses, evaluator metrics, object model names, global position và
+simulation-only labels bị cấm trong policy input.
+
+Cho phép GT trong evaluator để đo:
+- depth error;
+- detection precision/recall;
+- geometry error;
+- delivered count;
+- collision episodes;
+- robot stuck.
+
+Không cho GT đi vào:
+- RGB-D perception;
+- tracking measurements;
+- imitation policy observations;
+- expert action generation (trừ khi explicitly thiết kế privileged teacher
+  experiment và phải gắn nhãn là privileged, không phải onboard-only baseline).
+
+15.4. Timestamp discipline
+
+Ảnh trái/phải, depth, mask, CameraInfo phải đồng bộ gần timestamp (Approximate
+Time Synchronizer). Node nhận RGB-D S2.3/S2.6 dùng slop khoảng 0.08 s. Stereo
+raw/rectification/depth dùng slop khoảng 0.04 s.
+
+Detection cần đồng bộ odometry để đổi từ base sang odom; tracker lưu lịch sử
+odom và nội suy nếu có thể. Không ghép ảnh tại t với cmd/odom tại thời điểm
+khác quá xa.
+
+15.5. Coordinate-frame discipline
+
+Mỗi topic Pose/PoseArray phải có header.frame_id đúng:
+- raw camera optical.
+- rectified optical basis.
+- base_footprint.
+- odom.
+- Gazebo world.
+
+Muốn đổi frame dùng rigid transform:
+    P_A = R_A_B * P_B + t_A_B
+
+Nếu vector bắt nguồn từ rectified basis nhưng TF đặt ở raw optical frame:
+    P_raw = R1^T * P_rect
+rồi mới transform raw optical -> base.
+
+15.6. QoS và startup
+
+Camera topics thường dùng sensor-data QoS (BEST_EFFORT, VOLATILE). Report
+metadata có thể dùng RELIABLE + TRANSIENT_LOCAL để subscriber khởi động sau
+vẫn nhận được report latched. Publisher/subscriber phải có QoS tương thích.
+
+Một trạng thái WAITING có thể do:
+- node chưa có input;
+- QoS không tương thích;
+- report thiếu trường mà consumer yêu cầu;
+- timestamp quá cũ;
+- TF chưa sẵn sàng;
+- data sync fail.
+
+Khi debug, đọc status/metrics của node trước khi thay thuật toán.
+
+15.7. Debug bằng topic và graph trước khi sửa code
+
+Các lệnh chuẩn:
+    ros2 node list | sort | uniq -c
+    ros2 topic list -t
+    ros2 topic info <topic> --verbose
+    ros2 topic hz <topic>
+    ros2 topic echo <topic> --once
+    ros2 topic echo <topic> --once --full-length
+    ros2 control list_controllers -c /robot1/controller_manager
+    ros2 run tf2_ros tf2_echo <target> <source>
+    gz topic -l
+
+Duplicate node names/publishers phải được xử lý trước khi xem kết quả perception.
+Không launch world nhiều lần trong các terminal khác nhau.
+
+15.8. Chứng cứ kiểm thử
+
+Ba cấp độ:
+A. Static validation: syntax Python/XML/YAML/launch/package structure.
+B. Unit tests: công thức toán thuần, geometry, tracker core.
+C. Runtime integration: colcon build + ROS graph + Gazebo physics + messages
+   + visual inspection.
+
+Chỉ cấp C mới xác nhận một milestone vận hành thực tế. Unit tests PASS không
+chứng minh camera Gazebo hoặc ROS graph tích hợp đúng.
+
+===============================================================================
+16. TRẠNG THÁI DỰ ÁN TỚI TRƯỚC S3
+===============================================================================
+
+Theo các xác nhận trực tiếp của người dùng trong hội thoại:
+
+- V2 robot description: đã tạo và dùng làm nền tảng.
+- S1 Box Collection world: người dùng xác nhận world với các khối cam hoạt động.
+- S1.1 Task Evaluator: người dùng xác nhận chạy thành công, số liệu như mong đợi.
+- S1.2 Collision/Deadlock: người dùng xác nhận chạy thành công.
+- S2.1 stereo pipeline: đã khởi chạy và xử lý ảnh; người dùng đi tiếp các milestone.
+- S2.2 Depth Validation: đã xử lý lỗi overlay/metadata; người dùng xác nhận
+  status VALIDATED và trả được các điểm tâm/sample của hộp.
+- S2.3 Orange-box perception: người dùng xác nhận chạy ổn.
+- S2.4 Perception evaluation: người dùng xác nhận nhận diện thành công.
+- S2.5 Tracking: người dùng xác nhận các phần đã được kiểm tra đầy đủ.
+- S2.6 Geometry estimation: package đã được tạo; trong hội thoại hiện có chưa
+  có xác nhận rõ ràng từ người dùng rằng S2.6 đã được build và chạy runtime.
+  Vì vậy xem S2.6 là “đã bàn giao, cần xác nhận runtime” trước S3.
+
+Đừng coi kết quả metric minh họa trong các câu trả lời trước là kết quả thật.
+Chỉ số thực tế phải lấy từ ROS metrics topic trên máy người dùng.
+
+===============================================================================
+17. CÁC GIỚI HẠN VÀ RỦI RO CẦN NHỚ
+===============================================================================
+
+1. V2 khác robot paper: rộng 200 mm chassis (và wheel outer envelope khoảng
+   254 mm), dài chassis 300 mm; U-pusher làm chiều dài tổng thể tăng lên.
+   Mật độ/congestion ở arena sẽ khác robot Raspberry Pi Mouse rộng ~140 mm.
+
+2. Hình học V2 là design model, không phải CAD đo đạc cuối cùng của hardware.
+   Cần xác nhận mass, inertia, friction, caster contact và pusher dimensions.
+
+3. Box mass 0.12 kg/friction 0.65 là giả định mô phỏng ban đầu, paper không
+   cung cấp đầy đủ contact coefficients.
+
+4. Stereo calibration trong Gazebo lấy intrinsics/extrinsics từ synthetic
+   camera/TF. Camera thật cần calibration vật lý, đo baseline thực và kiểm tra
+   sync/exposure/lens distortion.
+
+5. Toe-in stereo đòi hỏi rectify. Không sử dụng disparity raw như stereo ngang
+   song song.
+
+6. StereoSGBM có invalid pixels và failure trên textureless/occluded/flat
+   surfaces. Không lấp NaN bằng giá trị tùy tiện.
+
+7. S2.3 center là visible-surface point, không phải box geometric center.
+
+8. S2.5 track ID là ID ngắn hạn của process, có thể đổi khi occlusion/crossing,
+   reset khi restart/time reset; track position bị ảnh hưởng bởi odometry drift.
+
+9. S2.6 centre/yaw dựa trên prior 8x8x10 cm và assume box rests on floor.
+   Square unmarked box yaw chỉ observable modulo 90 độ.
+
+10. S1.2 collision sensor hiện không phải full robot-robot contact coverage;
+    cần bổ sung robot-side contact cho swarm.
+
+11. Deadlock monitor hiện là heuristic một robot; task stalled không đồng
+    nghĩa deadlock; swarm livelock cần định nghĩa riêng.
+
+12. CPU hiện tại được ghi nhận: Intel Core i5-1235U, RAM 8 GB, không có GPU
+    rời, Ubuntu 24.04.5 (WSL-like). Giữ camera render 640x480 nhưng giảm
+    processing rates khi cần: rectification 5–10 Hz, depth 2–5 Hz, perception
+    5 Hz. Policy paper-style chỉ cần control 5 Hz.
+
+13. Paper training dùng RTX 3090; machine hiện tại không nên mặc định train đủ
+    20K/60K end-to-end CNN+MoE nhanh trên CPU. Có thể prototype nhỏ trên CPU,
+    nhưng nên cân nhắc máy GPU cho training chính.
+
+===============================================================================
+18. S3 SẼ BẮT ĐẦU NHƯ THẾ NÀO
+===============================================================================
+
+Mục tiêu S3: con người điều khiển robot V2 trong Gazebo để thu solo
+observation-action demonstrations có đồng bộ timestamp.
+
+18.1. Các node dự kiến
+
+A. Teleoperation node
+- Input: keyboard/joystick.
+- Output: geometry_msgs/msg/TwistStamped.
+- Topic: /robot1/diff_drive_controller/cmd_vel.
+- Giữ lệnh an toàn, publish stop khi release/timeout, log operator input.
+
+B. Demonstration recorder node
+Subscribe tối thiểu:
+- /robot1/stereo/left/image_raw hoặc image_rect (theo data protocol thống nhất).
+- Action command thực sự được phát tới controller.
+- ROS clock / sim time.
+- Có thể ghi thêm right image, depth, IMU, joint states, odom, tracking,
+  geometry dưới dạng auxiliary channels cho V2 extension.
+
+C. Metadata/session manager
+Lưu:
+- session ID, dataset category (single/static/dynamic/recovery).
+- world seed, robot spawn poses, box layout seed.
+- camera parameters, calibration/report hash.
+- control frequency, image frequency, timestamps.
+- operator observation mode (onboard-view/global-view).
+- code commit/version, parameters, simulation reset state.
+
+18.2. Đồng bộ observation-action
+
+Tại action time t, cần liên kết ảnh gần thời điểm hành động được tạo/phát.
+Không được ghi một ảnh bất kỳ cộng với lệnh mới nhất mà không xét timestamp.
+Có thể lưu timestamp riêng cho image, command publish, command receive/controller
+acceptance và sim time. Sau đó resample/interpolate theo định nghĩa rõ ràng.
+
+Baseline paper-style sample:
+    (I_left_rgb_96x72_at_t, [v_t, omega_t])
+
+V2 extended sample có thể lưu:
+    (I_left, I_right, depth, IMU, wheel_state, odom, action, timestamps)
+Nhưng policy baseline không được sử dụng toàn bộ auxiliary data mặc định.
+
+18.3. Bốn dataset
+
+- Single: một robot do con người điều khiển, robot khác không hoạt động.
+- Recovery: tạo các trạng thái stuck/blocked rồi operator recovery.
+- Static: một robot human-controlled, robot còn lại đứng yên.
+- Dynamic: policy ban đầu chạy trên robot khác, operator điều khiển một robot.
+
+Với project V2, có thể bắt đầu ít sample để debug recorder; sau đó mới thu
+6K/12K/2K hoặc dataset scaled theo paper. Không ép phải ghi 20K ngay khi
+pipeline đồng bộ chưa kiểm tra.
+
+18.4. Data integrity checks trước training
+
+- Timestamp monotonic, simulation reset được chia session mới.
+- Không có NaN/Inf trong action/pose/depth metadata.
+- Camera image đúng encoding/resolution.
+- Action không bị stale.
+- Image-action time delta có histogram và threshold.
+- Có phân bố action linear/angular, stopped frames, turns, pushing segments.
+- Kiểm tra ảnh có đủ tình huống và không có corruption.
+- Ghi rõ observation mode onboard/global.
+- Train/validation/test split theo episode/session, tránh leak frame liên tiếp.
+
+18.5. Paper reproduction vs V2 extension experiments
+
+Paper-style baseline:
+    left RGB -> resize 96x72 -> MobileNetV2 -> LSTM-MoE -> TwistStamped 5Hz.
+
+Extended experiment:
+    left/right RGB + depth (hoặc RGB+depth fusion) -> encoder(s) -> temporal
+    model/MoE -> TwistStamped.
+
+So sánh từng thay đổi riêng:
+- RGB vs stereo RGB.
+- RGB vs RGB+depth.
+- policy only RGB vs RGB+depth+IMU (nếu có cơ sở).
+- baseline no tracking vs policy được bổ sung object state.
+
+Không đưa odom/Gazebo GT vào baseline policy rồi gọi đó là reproduction.
+
+===============================================================================
+19. DANH SÁCH KIỂM TRA TRƯỚC KHI CHUYỂN SANG S3
+===============================================================================
+
+[ ] S2.6 build được trong workspace.
+[ ] orange_box_geometry_node chạy đúng một instance.
+[ ] geometry/ready = true khi có RGB-D hợp lệ.
+[ ] geometry/poses có frame_id = base_footprint.
+[ ] MarkerArray đúng vị trí tương đối trong RViz.
+[ ] Geometric centre không xuyên/nhảy bất thường khi robot đứng yên.
+[ ] Hộp bị che khuất -> fit confidence giảm hoặc invalid rõ ràng.
+[ ] Mặt hộp quan sát được -> normal hướng về camera.
+[ ] approach_yaw không bị hiểu nhầm thành absolute yaw 0–360 độ.
+[ ] Geometry track_id match hợp timestamp; nếu không thì null, không đoán.
+[ ] Không có Gazebo GT subscription trong S2.6 perception node.
+[ ] ROS node list không có duplicate nodes.
+[ ] Một lần launch simulator, tracker và geometry node mỗi cái một lần.
+[ ] Backup toàn bộ working workspace trước khi thêm S3.
+
+===============================================================================
+20. TÓM TẮT TƯ DUY CỐT LÕI CỦA TOÀN DỰ ÁN
+===============================================================================
+
+1. Tái tạo phương pháp khoa học, không nhất thiết sao chép phần cứng gốc.
+   Robot V2 được giữ vì ràng buộc phần cứng thật; mọi khác biệt so với paper
+   phải được ghi rõ.
+
+2. Simulation phải có physics thực: bánh, pusher, hộp, tường, hố và contact.
+   Không teleport object để tạo kết quả giả.
+
+3. Dữ liệu quan sát phải phản ánh những gì robot thật có thể nhìn/đo.
+   GT chỉ dành cho evaluator.
+
+4. Tách perception thành pipeline có thể kiểm chứng:
+   raw RGB -> rectify -> disparity -> depth -> detection -> tracking -> geometry.
+
+5. Không sử dụng kết quả downstream trước khi kiểm chứng upstream.
+   Ví dụ không đưa depth vào AI trước khi MAE/RMSE ở các khoảng cách được đo.
+
+6. Mọi vector phải đi đúng coordinate frame; mọi ảnh/pose/action phải có
+   timestamp rõ ràng.
+
+7. Node ROS 2 nhỏ, một trách nhiệm; package độc lập khi chức năng đủ lớn.
+   Overlay incremental giúp giữ phiên bản cũ đang chạy.
+
+8. Debug theo thứ tự: node graph -> topic publishers/subscribers -> QoS -> data
+   frequency -> timestamps -> TF -> message content -> thuật toán. Không sửa
+   code khi chưa biết dữ liệu đang tắc ở đâu.
+
+9. Dùng static validation, unit test và runtime test tách biệt; ghi rõ cấp nào
+   đã PASS.
+
+10. S3 không phải chỉ ghi rosbag. Nó phải tạo demonstration dataset sạch,
+    đồng bộ image-action, có metadata/reproducibility và tách rõ các dataset
+    Single/Recovery/Static/Dynamic.
+
+KẾT THÚC TÀI LIỆU THAM CHIẾU PRE-S3
+
+Tài liệu nguồn nội bộ:
+- V2_S1_BOX_COLLECTION.md
+- V2_S1_2_COLLISION_AND_DEADLOCK.md
+- V2_S2_STEREO_VISION.md
+- V2_S2_2_DEPTH_VALIDATION.md
+- V2_S2_3_ORANGE_BOX_PERCEPTION.md
+- V2_S2_4_PERCEPTION_EVALUATION.md
+- V2_S2_5_MULTI_FRAME_TRACKING.md
+- V2_S2_6_GEOMETRY_ESTIMATION.md
+- Xacro V2, controllers.yaml, stereo_v2.yaml, orange_box_perception.yaml,
+  orange_box_tracker.yaml, orange_box_geometry.yaml và source code của các node.

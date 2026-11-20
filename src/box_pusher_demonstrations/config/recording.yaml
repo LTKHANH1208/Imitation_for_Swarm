@@ -1,0 +1,20 @@
+# Default collection contract for the current V2 robot.
+# The launch file expands robot_namespace into fully-qualified topic names.
+# The recorder samples observations at each incoming TwistStamped action.
+# Sensors are selected only from messages whose stamp <= action stamp.
+
+demonstration_recorder:
+  ros__parameters:
+    use_sim_time: true
+    condition: single
+    operator_view: onboard
+    robot_count: 1
+    world_seed: 42
+    expected_control_hz: 5.0
+    max_left_image_age_sec: 0.15
+    max_optional_image_age_sec: 0.20
+    max_depth_age_sec: 0.60
+    max_aux_age_sec: 0.20
+    policy_image_width: 96
+    policy_image_height: 72
+    dataset_root: /home/ltk1208/Imitation_for_Swarm/datasets/demonstrations

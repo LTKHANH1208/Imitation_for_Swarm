@@ -1,0 +1,55 @@
+V2-S3: TELEOPERATION + DEMONSTRATION RECORDING PACKAGE
+Static validation report
+Date: 2026-11-20
+
+PACKAGE
+- ROS 2 package: box_pusher_demonstrations
+- Version: 0.1.0
+- Build type: ament_python
+- Intended ROS distribution: ROS 2 Jazzy
+- Workspace: /home/ltk1208/Imitation_for_Swarm
+
+IMPLEMENTED
+- S3.1 keyboard teleoperation, TwistStamped at 5 Hz by default.
+- Deadman timeout (0.45 s) publishes zero velocity when keyboard repeat events stop.
+- S3.2 recorder consumes the controller's TwistStamped input topic.
+- Observation/action matching uses latest message with sensor stamp <= action stamp.
+- Required left raw RGB; optional right RGB, rectified RGB, depth, IMU,
+  joint states and wheel odometry.
+- Baseline image saved as 96x72 PNG.
+- Full RGB images saved losslessly as PNG.
+- Depth saved as uint16 millimetres PNG; 0 means invalid.
+- CameraInfo calibration saved in camera_calibration.json.
+- Each episode has metadata.json and timestamped samples.jsonl.
+- Services start/stop; metrics/status topics.
+- Offline episode inspector.
+
+CHECKS PERFORMED IN THIS ENVIRONMENT
+1. Python compileall: PASS
+2. package.xml XML parse: PASS
+3. setup.py package metadata query: PASS
+4. Timestamp cache unit tests: PASS (4)
+5. Dataset inspector unit tests: PASS (2)
+6. Package structure unit test: PASS (1)
+7. Total included tests: PASS (7)
+
+NOT TESTED HERE
+- colcon build against ROS 2 Jazzy on user's machine.
+- Live ROS graph/QoS matching.
+- Live keyboard teleoperation and controller response.
+- CvBridge conversion against the user's Gazebo image/depth streams.
+- Recording service calls during a Gazebo session.
+
+IMPORTANT DATA CONTRACT
+- Policy baseline observation: left raw RGB resized to 96x72.
+- Action: linear.x and angular.z from TwistStamped seen on the controller input
+  topic. This is a published command, not a low-level motor-acceptance ACK.
+- The latest sensor message at or before action stamp is selected. Future frames
+  are never paired with a past action.
+- Required left image maximum age: 0.15 s.
+- Optional depth maximum age: 0.60 s.
+- Ground-truth Gazebo poses, collision events and task evaluator outputs are not
+  subscribed to or stored in the demonstration sample.
+- Auxiliary V2 channels must not be fed to the paper-style baseline policy by
+  default.
+- Stop recording before simulation reset; start a new episode after reset.
